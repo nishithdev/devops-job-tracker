@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>LinkedIn DevOps Scanner</title>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          sans-serif;
+        width: 380px;
+        background: #f5f5f7;
+        color: #1d1d1f;
+      }
+      .header {
+        background: linear-gradient(135deg, #1565c0 0%, #0d47a1 100%);
+        color: white;
+        padding: 16px 18px;
+      }
+      .header h1 {
+        font-size: 16px;
+        font-weight: 700;
+        margin: 0;
+      }
+      .status-bar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 8px;
+        font-size: 12px;
+      }
+      .status-indicator {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #4caf50;
+        animation: pulse 2s infinite;
+      }
+      .status-indicator.idle {
+        background: #9e9e9e;
+        animation: none;
+      }
+      .status-indicator.paused {
+        background: #ff9800;
+        animation: none;
+      }
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+      }
+      .main {
+        padding: 16px 18px;
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 10px;
+        margin-bottom: 16px;
+      }
+      .stat {
+        background: white;
+        border-radius: 8px;
+        padding: 12px;
+        text-align: center;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      }
+      .stat__num {
+        font-size: 24px;
+        font-weight: 700;
+        line-height: 1;
+        margin-bottom: 4px;
+      }
+      .stat__num--match {
+        color: #2e7d32;
+      }
+      .stat__num--analyzed {
+        color: #1565c0;
+      }
+      .stat__num--saved {
+        color: #f57c00;
+      }
+      .stat__lbl {
+        font-size: 10px;
+        color: #666;
+        text-transform: uppercase;
+        font-weight: 600;
+        letter-spacing: 0.5px;
+      }
+      .section {
+        margin-bottom: 16px;
+      }
+      .section-title {
+        font-size: 12px;
+        font-weight: 700;
+        color: #666;
+        text-transform: uppercase;
+        margin-bottom: 10px;
+        letter-spacing: 0.5px;
+      }
+      .autoscroll-control {
+        background: white;
+        border-radius: 8px;
+        padding: 14px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      }
+      .toggle-container {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 10px;
+      }
+      .toggle-label {
+        font-size: 14px;
+        font-weight: 600;
+        color: #333;
+      }
+      .toggle-switch {
+        position: relative;
+        width: 50px;
+        height: 26px;
+        background: #ccc;
+        border-radius: 13px;
+        cursor: pointer;
+        transition: background 0.3s;
+      }
+      .toggle-switch.active {
+        background: #2e7d32;
+      }
+      .toggle-switch::after {
+        content: '';
+        position: absolute;
+        width: 22px;
+        height: 22px;
+        background: white;
+        border-radius: 50%;
+        top: 2px;
+        left: 2px;
+        transition: transform 0.3s;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+      }
+      .toggle-switch.active::after {
+        transform: translateX(24px);
+      }
+      .speed-preset {
+        font-size: 11px;
+        color: #666;
+      }
+      .recent-matches {
+        background: white;
+        border-radius: 8px;
+        padding: 12px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      }
+      .match-card {
+        padding: 10px;
+        border-bottom: 1px solid #eee;
+        cursor: pointer;
+        transition: background 0.2s;
+      }
+      .match-card:hover {
+        background: #f9f9fb;
+      }
+      .match-card:last-child {
+        border-bottom: none;
+      }
+      .match-card-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 6px;
+      }
+      .match-badge {
+        font-size: 10px;
+        padding: 3px 8px;
+        border-radius: 10px;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+      .match-badge-hiring {
+        background: #ff5722;
+        color: white;
+      }
+      .match-badge-devops {
+        background: #1565c0;
+        color: white;
+      }
+      .match-author {
+        font-size: 11px;
+        font-weight: 600;
+        color: #333;
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .match-time {
+        font-size: 10px;
+        color: #999;
+      }
+      .match-snippet {
+        font-size: 11px;
+        color: #666;
+        line-height: 1.4;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+      }
+      .match-keywords {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin-top: 6px;
+      }
+      .keyword-pill {
+        font-size: 9px;
+        padding: 2px 6px;
+        border-radius: 8px;
+        background: #e3f2fd;
+        color: #1565c0;
+        font-weight: 600;
+      }
+      .empty-state {
+        text-align: center;
+        padding: 20px;
+        color: #999;
+        font-size: 12px;
+        font-style: italic;
+      }
+      .actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+      .btn {
+        padding: 10px 14px;
+        border: none;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        text-decoration: none;
+        text-align: center;
+        display: block;
+        transition: all 0.2s;
+      }
+      .btn-primary {
+        background: #1565c0;
+        color: white;
+      }
+      .btn-primary:hover {
+        background: #1976d2;
+      }
+      .btn-secondary {
+        background: white;
+        color: #333;
+        border: 1px solid #ddd;
+      }
+      .btn-secondary:hover {
+        background: #f9f9fb;
+      }
+      .btn-danger {
+        background: #d32f2f;
+        color: white;
+      }
+      .btn-danger:hover {
+        background: #e53935;
+      }
+      .btn-full {
+        grid-column: 1 / -1;
+      }
+      .footer {
+        padding: 0 18px 16px;
+        font-size: 10px;
+        color: #999;
+        text-align: center;
+      }
+      .shortcut-hint {
+        background: #fff3e0;
+        border: 1px solid #ffe0b2;
+        border-radius: 6px;
+        padding: 8px 10px;
+        font-size: 11px;
+        color: #e65100;
+        margin-bottom: 12px;
+        text-align: center;
+      }
+      code {
+        background: #ffecb3;
+        padding: 2px 4px;
+        border-radius: 3px;
+        font-size: 10px;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <h1>🔍 LinkedIn DevOps Scanner</h1>
+      <div class="status-bar">
+        <div class="status-indicator idle" id="status-indicator"></div>
+        <span id="status-text">Idle</span>
+      </div>
+    </div>
+
+    <div class="main">
+      <!-- Stats -->
+      <div class="stats">
+        <div class="stat">
+          <div class="stat__num stat__num--analyzed" id="analyzed">0</div>
+          <div class="stat__lbl">Analyzed</div>
+        </div>
+        <div class="stat">
+          <div class="stat__num stat__num--match" id="matches">0</div>
+          <div class="stat__lbl">Matches</div>
+        </div>
+        <div class="stat">
+          <div class="stat__num stat__num--saved" id="saved">0</div>
+          <div class="stat__lbl">Saved</div>
+        </div>
+      </div>
+
+      <!-- Keyboard Shortcut Hint -->
+      <div class="shortcut-hint">
+        💡 Quick toggle: <code>Ctrl+Shift+S</code>
+      </div>
+
+      <!-- Auto-Scroll Control -->
+      <div class="section">
+        <div class="section-title">Auto-Scroll</div>
+        <div class="autoscroll-control">
+          <div class="toggle-container">
+            <span class="toggle-label">Auto-Scroll Mode</span>
+            <div class="toggle-switch" id="autoscroll-toggle"></div>
+          </div>
+          <div class="speed-preset" id="speed-preset">Speed: Balanced</div>
+        </div>
+      </div>
+
+      <!-- Recent Matches -->
+      <div class="section">
+        <div class="section-title">Recent Matches</div>
+        <div class="recent-matches" id="recent-matches">
+          <div class="empty-state">No matches yet. Start browsing LinkedIn!</div>
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="actions">
+        <a href="saved.html" target="_blank" class="btn btn-primary">📋 Saved Matches</a>
+        <a href="settings.html" target="_blank" class="btn btn-secondary">⚙️ Settings</a>
+        <button class="btn btn-danger btn-full" id="clear-matches">🗑️ Clear All Matches</button>
+        <a href="diagnostics.html" target="_blank" class="btn btn-secondary btn-full">🔧 Diagnostics</a>
+      </div>
+    </div>
+
+    <div class="footer">
+      v2.0.0 | Made with ❤️ for DevOps job hunters
+    </div>
+
+    <!-- Shared utilities -->
+    <script src="shared/utils.js"></script>
+    <script src="shared/storageUtils.js"></script>
+    <script src="shared/formatters.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>
