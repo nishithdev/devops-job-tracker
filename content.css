@@ -44,6 +44,12 @@
   background: #ff9800;
 }
 
+.devops-scan-badge--duplicate {
+  background: #ff9800;
+  color: white;
+  cursor: help;
+}
+
 .devops-scan-open-btn {
   background: #fff;
   color: #2e7d32;
