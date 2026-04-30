@@ -75,32 +75,26 @@ function applyFilters() {
   // Update page size
   pageSize = pageSizeSelect === 'all' ? Infinity : parseInt(pageSizeSelect);
   
-  // Filter by type
+  // Single-pass filter combining all conditions for better performance
   filteredMatches = allMatches.filter(match => {
+    // Filter by type
     if (typeFilter === 'hiring' && !match.isHiring) return false;
     if (typeFilter === 'devops' && match.isHiring) return false;
-    return true;
-  });
-  
-  // Filter by duplicate status
-  if (duplicateFilter === 'duplicates-only') {
-    filteredMatches = filteredMatches.filter(match => match.duplicateOf);
-  } else if (duplicateFilter === 'originals-only') {
-    filteredMatches = filteredMatches.filter(match => !match.duplicateOf);
-  }
-  
-  // Filter by skill
-  if (skillFilter !== 'all') {
-    filteredMatches = filteredMatches.filter(match => {
+    
+    // Filter by duplicate status
+    if (duplicateFilter === 'duplicates-only' && !match.duplicateOf) return false;
+    if (duplicateFilter === 'originals-only' && match.duplicateOf) return false;
+    
+    // Filter by skill
+    if (skillFilter !== 'all') {
       const skills = match.skills || [];
-      return skills.some(skill => skill.toLowerCase() === skillFilter.toLowerCase());
-    });
-  }
-  
-  // Filter by search text
-  if (searchText) {
-    filteredMatches = filteredMatches.filter(match => {
-      // Search in snippet, keywords, skills, and emails
+      if (!skills.some(skill => skill.toLowerCase() === skillFilter.toLowerCase())) {
+        return false;
+      }
+    }
+    
+    // Filter by search text
+    if (searchText) {
       const emailText = (match.emails || []).join(' ');
       const skillsText = (match.skills || []).join(' ');
       // Support both old (single keyword) and new (multiple keywords) formats
@@ -108,15 +102,19 @@ function applyFilters() {
         ? match.devopsKeywords.join(' ')
         : match.devopsKeyword;
       
-      return (
+      const matchesSearch = (
         match.snippet.toLowerCase().includes(searchText) ||
         keywordsText.toLowerCase().includes(searchText) ||
         (match.hiringSignal && match.hiringSignal.toLowerCase().includes(searchText)) ||
         emailText.toLowerCase().includes(searchText) ||
         skillsText.toLowerCase().includes(searchText)
       );
-    });
-  }
+      
+      if (!matchesSearch) return false;
+    }
+    
+    return true;
+  });
   
   // Sort
   applySorting(sortBy === 'newest' ? 'desc' : 'asc');
@@ -428,18 +426,20 @@ function renderMatches() {
     </table>
   `;
   
-  // Add event listeners
-  attachTableEventListeners();
+  // Event listeners are attached via delegation on container (see setupEventDelegation)
 }
 
-function attachTableEventListeners() {
+// Setup event delegation for table interactions (called once on page load)
+function setupEventDelegation() {
   const container = document.getElementById('matches-container');
   
-  // Select all checkbox
-  const selectAllCheckbox = document.getElementById('select-all');
-  if (selectAllCheckbox) {
-    selectAllCheckbox.addEventListener('change', (e) => {
-      const checked = e.target.checked;
+  // Single delegated event listener for all table interactions
+  container.addEventListener('click', (e) => {
+    const target = e.target;
+    
+    // Handle select-all checkbox
+    if (target.id === 'select-all') {
+      const checked = target.checked;
       displayedMatches.forEach(match => {
         if (checked) {
           selectedRows.add(match.id);
@@ -449,26 +449,25 @@ function attachTableEventListeners() {
       });
       renderMatches();
       updateBulkActions();
-    });
-  }
-  
-  // Row checkboxes
-  container.querySelectorAll('.row-checkbox').forEach(checkbox => {
-    checkbox.addEventListener('change', (e) => {
-      const matchId = e.target.getAttribute('data-match-id');
-      if (e.target.checked) {
+      return;
+    }
+    
+    // Handle row checkboxes
+    if (target.classList.contains('row-checkbox')) {
+      const matchId = target.getAttribute('data-match-id');
+      if (target.checked) {
         selectedRows.add(matchId);
       } else {
         selectedRows.delete(matchId);
       }
-      updateRowSelection(matchId, e.target.checked);
+      updateRowSelection(matchId, target.checked);
       updateBulkActions();
-    });
-  });
-  
-  // Sortable headers
-  container.querySelectorAll('th.sortable').forEach(th => {
-    th.addEventListener('click', () => {
+      return;
+    }
+    
+    // Handle sortable headers
+    if (target.classList.contains('sortable') || target.closest('th.sortable')) {
+      const th = target.classList.contains('sortable') ? target : target.closest('th.sortable');
       const column = th.getAttribute('data-column');
       if (sortColumn === column) {
         sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
@@ -479,30 +478,19 @@ function attachTableEventListeners() {
       applySorting();
       renderMatches();
       updatePagination();
-    });
-  });
-  
-  // Delete buttons
-  container.querySelectorAll('.btn-delete').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      const matchId = e.target.getAttribute('data-match-id');
+      return;
+    }
+    
+    // Handle delete buttons
+    if (target.classList.contains('btn-delete')) {
+      const matchId = target.getAttribute('data-match-id');
       if (matchId) deleteMatch(matchId);
-    });
-  });
-  
-  // Status dropdowns
-  container.querySelectorAll('.status-dropdown').forEach(dropdown => {
-    dropdown.addEventListener('change', (e) => {
-      const matchId = e.target.getAttribute('data-match-id');
-      const newStatus = e.target.value;
-      if (matchId) updateMatchStatus(matchId, newStatus);
-    });
-  });
-  
-  // See more/less buttons
-  container.querySelectorAll('.see-more-btn').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      const matchId = e.target.getAttribute('data-match-id');
+      return;
+    }
+    
+    // Handle see more/less buttons
+    if (target.classList.contains('see-more-btn')) {
+      const matchId = target.getAttribute('data-match-id');
       const preview = container.querySelector(`.post-text-preview[data-match-id="${matchId}"]`);
       const full = container.querySelector(`.post-text-full[data-match-id="${matchId}"]`);
       
@@ -513,16 +501,32 @@ function attachTableEventListeners() {
           // Collapse - show preview, hide full
           preview.style.display = 'block';
           full.style.display = 'none';
-          e.target.textContent = '...see more';
+          target.textContent = '...see more';
         } else {
           // Expand - hide preview, show full
           preview.style.display = 'none';
           full.style.display = 'block';
-          e.target.textContent = 'see less';
+          target.textContent = 'see less';
         }
       }
-    });
+      return;
+    }
   });
+  
+  // Handle status dropdown changes separately (change event doesn't bubble like click)
+  container.addEventListener('change', (e) => {
+    if (e.target.classList.contains('status-dropdown')) {
+      const matchId = e.target.getAttribute('data-match-id');
+      const newStatus = e.target.value;
+      if (matchId) updateMatchStatus(matchId, newStatus);
+    }
+  });
+}
+
+function attachTableEventListeners() {
+  // Deprecated - event delegation is now used via setupEventDelegation()
+  // This function is kept for backward compatibility but does nothing
+  // All event handling is done through delegated listeners on the container
 }
 
 function updateRowSelection(matchId, selected) {
@@ -894,6 +898,9 @@ window.refreshInterval = setInterval(() => {
     loadMatches();
   }
 }, 10000);
+
+// Setup event delegation for table interactions (once on page load)
+setupEventDelegation();
 
 // Initial load
 loadMatches();
