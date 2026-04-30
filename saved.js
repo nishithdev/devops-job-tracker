@@ -341,6 +341,33 @@ function renderMatches() {
       postDisplayHtml = `<div class="post-text-full">${postTextHtml}</div>`;
     }
     
+    // Source URL column
+    let sourceUrlHtml = '<span style="color:#999;font-size:12px;">N/A</span>';
+    if (match.sourceUrl) {
+      // Extract readable part from URL (e.g., "feed", "groups/123456", "search/results")
+      let urlLabel = 'LinkedIn';
+      try {
+        const url = new URL(match.sourceUrl);
+        const pathParts = url.pathname.split('/').filter(p => p);
+        if (pathParts.length > 0) {
+          if (pathParts[0] === 'feed') {
+            urlLabel = '📰 Feed';
+          } else if (pathParts[0] === 'groups') {
+            urlLabel = '👥 Group';
+          } else if (pathParts[0] === 'search') {
+            urlLabel = '🔍 Search';
+          } else if (pathParts[0] === 'jobs') {
+            urlLabel = '💼 Jobs';
+          } else {
+            urlLabel = pathParts[0].charAt(0).toUpperCase() + pathParts[0].slice(1);
+          }
+        }
+      } catch (e) {
+        urlLabel = 'LinkedIn';
+      }
+      sourceUrlHtml = `<a href="${escapeHtml(match.sourceUrl)}" target="_blank" style="color:#0a66c2;text-decoration:none;font-size:12px;" title="${escapeHtml(match.sourceUrl)}">${urlLabel} ↗</a>`;
+    }
+    
     // Actions column
     const openBtn = match.url 
       ? `<a href="${escapeHtml(match.url)}" target="_blank" class="btn-open">Open ↗</a>`
@@ -366,6 +393,7 @@ function renderMatches() {
           </select>
         </td>
         <td class="col-skills">${skillsHtml}</td>
+        <td class="col-source-url">${sourceUrlHtml}</td>
         <td class="col-snippet" style="max-width:800px;white-space:pre-wrap;word-wrap:break-word;">${postDisplayHtml}</td>
         <td class="col-emails">${emailsHtml}</td>
         <td class="col-actions">
@@ -379,7 +407,7 @@ function renderMatches() {
   // Determine if all rows are selected
   const allSelected = displayedMatches.length > 0 && displayedMatches.every(m => selectedRows.has(m.id));
   
-  container.innerHTML = `
+    container.innerHTML = `
     <table>
       <thead>
         <tr>
@@ -388,6 +416,7 @@ function renderMatches() {
           <th class="sortable${sortColumn === 'keyword' ? (sortDirection === 'asc' ? ' sorted-asc' : ' sorted-desc') : ''}" data-column="keyword">Keywords</th>
           <th class="sortable${sortColumn === 'status' ? (sortDirection === 'asc' ? ' sorted-asc' : ' sorted-desc') : ''}" data-column="status">Status</th>
           <th>Skills</th>
+          <th>Source URL</th>
           <th>Full Post (with highlights)</th>
           <th>Emails</th>
           <th>Actions</th>
@@ -691,7 +720,8 @@ function convertToCSV(matches) {
     'Date',
     'Author',
     'Type',
-    'URL',
+    'Post URL',
+    'Source URL',
     'Snippet',
     'DevOps Keywords',
     'Skills',
@@ -725,6 +755,7 @@ function convertToCSV(matches) {
       escapeCSV(match.author),
       escapeCSV(match.isHiring ? 'Hiring' : 'DevOps'),
       escapeCSV(match.url),
+      escapeCSV(match.sourceUrl || ''),
       escapeCSV(match.snippet || match.fullText?.substring(0, 200)),
       escapeCSV(devopsKeywords),
       escapeCSV(skills),
