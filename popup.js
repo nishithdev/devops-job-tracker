@@ -205,4 +205,4 @@ checkFirstTimeUser();
 checkVersionUpdate();
 
 // Refresh stats every 2 seconds
-setInterval(updateStats, 2000);
+// setInterval(updateStats, 2000);
