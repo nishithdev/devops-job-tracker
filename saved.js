@@ -681,16 +681,111 @@ function copyAllEmails() {
   });
 }
 
+function convertToCSV(matches) {
+  if (matches.length === 0) return '';
+  
+  // Define CSV headers
+  const headers = [
+    'ID',
+    'Timestamp',
+    'Date',
+    'Author',
+    'Type',
+    'URL',
+    'Snippet',
+    'DevOps Keywords',
+    'Skills',
+    'Hiring Signals',
+    'Is Hiring',
+    'Is Duplicate',
+    'Duplicate Of'
+  ];
+  
+  // Escape CSV field (handle quotes and commas)
+  const escapeCSV = (field) => {
+    if (field == null) return '';
+    const str = String(field);
+    if (str.includes('"') || str.includes(',') || str.includes('\n')) {
+      return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+  };
+  
+  // Create CSV rows
+  const rows = matches.map(match => {
+    const date = match.timestamp ? new Date(match.timestamp).toLocaleString() : '';
+    const devopsKeywords = (match.devopsKeywords || []).join('; ');
+    const skills = (match.skills || []).join('; ');
+    const hiringSignals = (match.hiringSignals || []).join('; ');
+    
+    return [
+      escapeCSV(match.id),
+      escapeCSV(match.timestamp),
+      escapeCSV(date),
+      escapeCSV(match.author),
+      escapeCSV(match.isHiring ? 'Hiring' : 'DevOps'),
+      escapeCSV(match.url),
+      escapeCSV(match.snippet || match.fullText?.substring(0, 200)),
+      escapeCSV(devopsKeywords),
+      escapeCSV(skills),
+      escapeCSV(hiringSignals),
+      escapeCSV(match.isHiring ? 'Yes' : 'No'),
+      escapeCSV(match.duplicateOf ? 'Yes' : 'No'),
+      escapeCSV(match.duplicateOf || '')
+    ].join(',');
+  });
+  
+  // Combine headers and rows
+  return [headers.join(','), ...rows].join('\n');
+}
+
+function exportMatchesCSV() {
+  const csv = convertToCSV(allMatches);
+  
+  if (!csv) {
+    alert('No matches to export!');
+    return;
+  }
+  
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `devops-scanner-matches-${Date.now()}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportSelectedCSV() {
+  if (selectedRows.size === 0) {
+    alert('No rows selected!');
+    return;
+  }
+  
+  const selectedMatches = allMatches.filter(m => selectedRows.has(m.id));
+  const csv = convertToCSV(selectedMatches);
+  
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `devops-scanner-selected-${Date.now()}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // Event listeners
 document.getElementById('btn-refresh').addEventListener('click', loadMatches);
 document.getElementById('btn-copy-emails').addEventListener('click', copyAllEmails);
 document.getElementById('btn-export').addEventListener('click', exportMatches);
+document.getElementById('btn-export-csv').addEventListener('click', exportMatchesCSV);
 document.getElementById('btn-clear-all').addEventListener('click', clearAllMatches);
 document.getElementById('btn-clean-duplicates').addEventListener('click', cleanDuplicates);
 
 // Bulk action buttons
 document.getElementById('btn-delete-selected').addEventListener('click', deleteSelected);
 document.getElementById('btn-export-selected').addEventListener('click', exportSelected);
+document.getElementById('btn-export-selected-csv').addEventListener('click', exportSelectedCSV);
 document.getElementById('btn-deselect-all').addEventListener('click', () => {
   selectedRows.clear();
   renderMatches();
