@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>LinkedIn DevOps Scanner - Settings</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f5f5f7;
+      color: #1d1d1f;
+      padding: 20px;
+      line-height: 1.6;
+    }
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+      overflow: hidden;
+    }
+    .header {
+      background: linear-gradient(135deg, #1565c0 0%, #0d47a1 100%);
+      color: white;
+      padding: 30px 40px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .header h1 {
+      font-size: 28px;
+      font-weight: 700;
+    }
+    .header-actions {
+      display: flex;
+      gap: 10px;
+    }
+    .btn {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-primary {
+      background: #2e7d32;
+      color: white;
+    }
+    .btn-primary:hover {
+      background: #388e3c;
+    }
+    .btn-secondary {
+      background: white;
+      color: #1565c0;
+      border: 2px solid white;
+    }
+    .btn-secondary:hover {
+      background: rgba(255,255,255,0.9);
+    }
+    .btn-danger {
+      background: #d32f2f;
+      color: white;
+    }
+    .btn-danger:hover {
+      background: #e53935;
+    }
+    .content {
+      padding: 40px;
+    }
+    .section {
+      margin-bottom: 40px;
+    }
+    .section:last-child {
+      margin-bottom: 0;
+    }
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 20px;
+      padding-bottom: 10px;
+      border-bottom: 2px solid #e0e0e0;
+    }
+    .section-title {
+      font-size: 20px;
+      font-weight: 700;
+      color: #1565c0;
+    }
+    .section-description {
+      font-size: 14px;
+      color: #666;
+      margin-bottom: 20px;
+    }
+    .keyword-group {
+      margin-bottom: 30px;
+    }
+    .keyword-group-label {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 10px;
+      color: #333;
+    }
+    .keyword-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 10px;
+      min-height: 40px;
+      padding: 10px;
+      background: #f9f9f9;
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
+    }
+    .keyword-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      background: #1565c0;
+      color: white;
+      border-radius: 16px;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .keyword-tag.hiring {
+      background: #2e7d32;
+    }
+    .keyword-tag.exclude {
+      background: #d32f2f;
+    }
+    .keyword-tag.skill {
+      background: #0277bd;
+    }
+    .keyword-tag button {
+      background: none;
+      border: none;
+      color: white;
+      cursor: pointer;
+      font-size: 16px;
+      padding: 0;
+      width: 18px;
+      height: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      transition: background 0.2s;
+    }
+    .keyword-tag button:hover {
+      background: rgba(0,0,0,0.2);
+    }
+    .add-keyword {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .add-keyword input {
+      flex: 1;
+      padding: 10px 14px;
+      border: 1px solid #d0d0d0;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+    .add-keyword input:focus {
+      outline: none;
+      border-color: #1565c0;
+    }
+    .add-keyword button {
+      padding: 10px 20px;
+      background: #1565c0;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .add-keyword button:hover {
+      background: #1976d2;
+    }
+    .actions {
+      display: flex;
+      gap: 12px;
+      padding-top: 20px;
+      border-top: 2px solid #e0e0e0;
+    }
+    .success-message {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      background: #2e7d32;
+      color: white;
+      padding: 14px 20px;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+      font-weight: 600;
+      z-index: 1000;
+      animation: slideIn 0.3s ease-out;
+    }
+    @keyframes slideIn {
+      from {
+        transform: translateX(400px);
+        opacity: 0;
+      }
+      to {
+        transform: translateX(0);
+        opacity: 1;
+      }
+    }
+    .helper-text {
+      font-size: 12px;
+      color: #666;
+      margin-top: 4px;
+      font-style: italic;
+    }
+    .counter {
+      font-size: 14px;
+      color: #666;
+      font-weight: 500;
+    }
+    .empty-state {
+      padding: 20px;
+      text-align: center;
+      color: #999;
+      font-style: italic;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>⚙️ Settings</h1>
+      <div class="header-actions">
+        <button class="btn btn-secondary" id="btn-reset">Reset to Defaults</button>
+        <button class="btn btn-primary" id="btn-save">Save Changes</button>
+      </div>
+    </div>
+
+    <div class="content">
+      <!-- DevOps Keywords Section -->
+      <div class="section">
+        <div class="section-header">
+          <div>
+            <div class="section-title">🔵 DevOps Keywords</div>
+          </div>
+          <span class="counter" id="devops-count">0 keywords</span>
+        </div>
+        <div class="section-description">
+          Posts containing these keywords will be detected. Add job titles, technologies, or DevOps-related terms.
+        </div>
+        <div class="keyword-group">
+          <div class="keyword-tags" id="devops-keywords">
+            <div class="empty-state">Loading...</div>
+          </div>
+          <div class="add-keyword">
+            <input type="text" id="add-devops" placeholder="e.g., devops, kubernetes, terraform" />
+            <button id="btn-add-devops">Add Keyword</button>
+          </div>
+          <div class="helper-text">Press Enter to add multiple keywords separated by commas</div>
+        </div>
+      </div>
+
+      <!-- Hiring Signals Section -->
+      <div class="section">
+        <div class="section-header">
+          <div>
+            <div class="section-title">🔥 Hiring Signals</div>
+          </div>
+          <span class="counter" id="hiring-count">0 signals</span>
+        </div>
+        <div class="section-description">
+          Posts containing these phrases indicate hiring opportunities. Examples: "hiring", "open position", "join our team"
+        </div>
+        <div class="keyword-group">
+          <div class="keyword-tags hiring" id="hiring-signals">
+            <div class="empty-state">Loading...</div>
+          </div>
+          <div class="add-keyword">
+            <input type="text" id="add-hiring" placeholder="e.g., hiring, open role, join us" />
+            <button id="btn-add-hiring">Add Signal</button>
+          </div>
+          <div class="helper-text">Press Enter to add multiple signals separated by commas</div>
+        </div>
+      </div>
+
+      <!-- Invalid Keywords Section -->
+      <div class="section">
+        <div class="section-header">
+          <div>
+            <div class="section-title">⚠️ Invalid Keywords (Exclusions)</div>
+          </div>
+          <span class="counter" id="invalid-count">0 keywords</span>
+        </div>
+        <div class="section-description">
+          Posts containing these keywords will be filtered out. Use to exclude training courses, bootcamps, or irrelevant content.
+        </div>
+        <div class="keyword-group">
+          <div class="keyword-tags exclude" id="invalid-keywords">
+            <div class="empty-state">Loading...</div>
+          </div>
+          <div class="add-keyword">
+            <input type="text" id="add-invalid" placeholder="e.g., training course, bootcamp, certification" />
+            <button id="btn-add-invalid">Add Exclusion</button>
+          </div>
+          <div class="helper-text">Press Enter to add multiple exclusions separated by commas</div>
+        </div>
+      </div>
+
+      <!-- Skills Section -->
+      <div class="section">
+        <div class="section-header">
+          <div>
+            <div class="section-title">💼 Technical Skills</div>
+          </div>
+          <span class="counter" id="skills-count">0 skills</span>
+        </div>
+        <div class="section-description">
+          Skills detected in posts for filtering and tagging. Examples: Docker, AWS, Python, Terraform
+        </div>
+        <div class="keyword-group">
+          <div class="keyword-tags skill" id="skills-keywords">
+            <div class="empty-state">Loading...</div>
+          </div>
+          <div class="add-keyword">
+            <input type="text" id="add-skill" placeholder="e.g., Docker, Kubernetes, AWS" />
+            <button id="btn-add-skill">Add Skill</button>
+          </div>
+          <div class="helper-text">Press Enter to add multiple skills separated by commas</div>
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="actions">
+        <button class="btn btn-danger" id="btn-reset-confirm">⚠️ Reset All to Defaults</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Shared utilities -->
+  <script src="shared/utils.js"></script>
+  <script src="shared/storageUtils.js"></script>
+  <script src="shared/keywordConfig.js"></script>
+  
+  <script src="settings.js"></script>
+</body>
+</html>
