@@ -178,6 +178,39 @@ try {
     }, 1000);
   }
 
+  // ---- Storage write batching ---------------------------------------------
+  // Coalesces rapid writes to chrome.storage.local. Keys written close together
+  // (within STORAGE_FLUSH_MS) are merged into a single set() call to reduce I/O.
+  const STORAGE_FLUSH_MS = 100;
+  let _pendingStorageWrites = {};
+  let _storageFlushTimer = null;
+
+  function scheduleStorageWrite(updates) {
+    try {
+      if (!chrome.storage || !chrome.storage.local) return;
+      // Merge into pending; later values overwrite earlier ones (last-write-wins)
+      Object.assign(_pendingStorageWrites, updates);
+      if (_storageFlushTimer) return;
+      _storageFlushTimer = setTimeout(() => {
+        _storageFlushTimer = null;
+        const batch = _pendingStorageWrites;
+        _pendingStorageWrites = {};
+        try {
+          if (!chrome.storage || !chrome.storage.local) return;
+          chrome.storage.local.set(batch, () => {
+            if (chrome.runtime.lastError) {
+              // Silently handle - extension may have been reloaded
+            }
+          });
+        } catch (e) {
+          // Extension context invalidated - drop this batch
+        }
+      }, STORAGE_FLUSH_MS);
+    } catch (e) {
+      // Extension context invalidated - skip
+    }
+  }
+
   // ---- Helpers -------------------------------------------------------------
   const lower = (s) => (s || "").toLowerCase();
 
@@ -977,16 +1010,14 @@ try {
         // Extension context invalidated - silently skip storage update
         return;
       }
-      
-      chrome.storage.local.set({
+
+      // Use batched writes - syncCounts is called frequently during scanning
+      // and individual writes get coalesced within STORAGE_FLUSH_MS window.
+      scheduleStorageWrite({
         devopsScanCount: seenMatches.size,
         devopsScanAnalyzed: seenPosts.size,
         devopsScanLast: Date.now(),
         devopsScanLastMatch: lastMatchInfo,
-      }, () => {
-        if (chrome.runtime.lastError) {
-          // Silently handle error - user likely reloaded extension
-        }
       });
     } catch (e) {
       // Extension context invalidated - continue without crashing
