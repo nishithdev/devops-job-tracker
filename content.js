@@ -57,6 +57,21 @@ try {
   let INVALID_KEYWORDS = [...DEFAULT_INVALID_KEYWORDS];
   let SKILLS = [...DEFAULT_SKILLS];
   
+  // Regex cache to avoid recompiling patterns on every scan
+  const regexCache = new Map();
+  
+  function getCachedRegex(keyword, flags = 'i') {
+    const cacheKey = `${keyword}:${flags}`;
+    if (!regexCache.has(cacheKey)) {
+      regexCache.set(cacheKey, new RegExp(`\\b${keyword}\\b`, flags));
+    }
+    return regexCache.get(cacheKey);
+  }
+  
+  function clearRegexCache() {
+    regexCache.clear();
+  }
+  
   // Load custom keywords from storage
   function loadCustomKeywords() {
     chrome.storage.local.get(['customKeywords'], (result) => {
@@ -66,6 +81,9 @@ try {
         EXCLUDE_KEYWORDS = result.customKeywords.excludeKeywords || DEFAULT_EXCLUDE_KEYWORDS;
         INVALID_KEYWORDS = result.customKeywords.invalidKeywords || DEFAULT_INVALID_KEYWORDS;
         SKILLS = result.customKeywords.skills || DEFAULT_SKILLS;
+        
+        // Clear regex cache when keywords change
+        clearRegexCache();
         
         dbg("Custom keywords loaded from settings");
         dbg("DevOps keywords:", DEVOPS_KEYWORDS.length);
@@ -172,8 +190,8 @@ try {
       //   "eks" should NOT match "weeks", "seeks", "cheeks"
       //   "gke" should NOT match "gke" within other words
       if (n.length <= 3 && /^[a-z0-9]+$/.test(n)) {
-        // Create regex with word boundaries: \bsre\b
-        const regex = new RegExp(`\\b${n}\\b`, 'i');
+        // Use cached regex with word boundaries: \bsre\b
+        const regex = getCachedRegex(n, 'i');
         return regex.test(haystack);
       }
       // For longer keywords and phrases, use simple substring match
@@ -187,7 +205,7 @@ try {
     // Returns ALL matching keywords (not just the first one)
     return needles.filter((n) => {
       if (n.length <= 3 && /^[a-z0-9]+$/.test(n)) {
-        const regex = new RegExp(`\\b${n}\\b`, 'i');
+        const regex = getCachedRegex(n, 'i');
         return regex.test(haystack);
       }
       return haystack.includes(n);
@@ -247,7 +265,7 @@ try {
     // Extract matched skills
     const matchedSkills = SKILLS.filter(skill => {
       if (skill.length <= 3 && /^[a-z0-9]+$/.test(skill)) {
-        const regex = new RegExp(`\\b${skill}\\b`, 'i');
+        const regex = getCachedRegex(skill, 'i');
         return regex.test(t);
       }
       return t.includes(skill);
@@ -361,11 +379,22 @@ try {
   }
   
   function highlightInElement(element, keywords) {
-    // Create a regex pattern that matches any of the keywords (case-insensitive)
-    const pattern = keywords
-      .map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) // Escape regex chars
-      .join('|');
-    const regex = new RegExp(`\\b(${pattern})\\b`, 'gi');
+    // Create cache key from keywords array
+    const cacheKey = `highlight:${keywords.sort().join('|')}`;
+    
+    // Get or create cached regex pattern
+    let pattern, regex;
+    if (regexCache.has(cacheKey)) {
+      const cached = regexCache.get(cacheKey);
+      pattern = cached.pattern;
+      regex = cached.regex;
+    } else {
+      pattern = keywords
+        .map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) // Escape regex chars
+        .join('|');
+      regex = new RegExp(`\\b(${pattern})\\b`, 'gi');
+      regexCache.set(cacheKey, { pattern, regex });
+    }
     
     // Process all text nodes
     const walker = document.createTreeWalker(
@@ -382,6 +411,8 @@ try {
       if (node.parentElement.tagName === 'MARK') continue;
       
       const text = node.textContent;
+      // Reset regex before testing
+      regex.lastIndex = 0;
       if (regex.test(text)) {
         nodesToReplace.push(node);
       }
@@ -393,7 +424,7 @@ try {
       const fragment = document.createDocumentFragment();
       let lastIndex = 0;
       
-      // Reset regex
+      // Create new regex instance for replacement (avoid lastIndex issues)
       const highlightRegex = new RegExp(`\\b(${pattern})\\b`, 'gi');
       let match;
       
@@ -450,6 +481,9 @@ try {
       badge.classList.add("devops-scan-badge--hiring");
     }
     bar.appendChild(badge);
+    
+    // Check for duplicates and add duplicate badge if found
+    checkDuplicateAndDecorate(postEl, bar, url, text);
 
     if (url) {
       const btn = document.createElement("button");
@@ -476,6 +510,82 @@ try {
     // Save match and notify popup (via storage) of the new match count.
     bumpMatch(url, info);
     saveMatch(postEl, url, info, text);
+  }
+  
+  function checkDuplicateAndDecorate(postEl, bar, url, text) {
+    // Check if this post is a duplicate of an already saved post
+    try {
+      if (!chrome.storage || !chrome.storage.local) return;
+      
+      chrome.storage.local.get(['devopsSavedMatches'], (result) => {
+        if (chrome.runtime.lastError) return;
+        
+        const matches = result.devopsSavedMatches || [];
+        
+        // Create temporary match object for duplicate checking
+        const snippet = text.substring(0, 200) + (text.length > 200 ? '...' : '');
+        const tempMatch = {
+          url: url || null,
+          snippet: snippet
+        };
+        
+        let isDuplicate = false;
+        let reason = '';
+        
+        // Check URL-based duplicate first
+        if (url && matches.some(m => m.url === url)) {
+          isDuplicate = true;
+          reason = 'URL match';
+        } else {
+          // Check content-based duplicate
+          const duplicateId = findDuplicate(tempMatch, matches);
+          if (duplicateId) {
+            isDuplicate = true;
+            reason = 'Content match';
+          }
+        }
+        
+        // If duplicate found, add badge and increment session counter
+        if (isDuplicate) {
+          addDuplicateBadge(bar, reason);
+          
+          // Increment duplicate counter for auto-scroll session
+          if (autoScrollEnabled) {
+            duplicatesFoundInSession++;
+            dbg(`duplicates in session: ${duplicatesFoundInSession}/${MAX_DUPLICATES_BEFORE_STOP}`);
+            
+            // Check if we should stop auto-scrolling
+            if (duplicatesFoundInSession >= MAX_DUPLICATES_BEFORE_STOP) {
+              dbg(`reached ${MAX_DUPLICATES_BEFORE_STOP} duplicates, stopping auto-scroll`);
+              // Stop auto-scroll and show prompt
+              setTimeout(() => {
+                showDuplicateLimitPrompt();
+              }, 500);
+            }
+          }
+        }
+      });
+    } catch (e) {
+      dbg('checkDuplicateAndDecorate error:', e.message);
+    }
+  }
+  
+  function addDuplicateBadge(bar, reason) {
+    const duplicateBadge = document.createElement("span");
+    duplicateBadge.className = "devops-scan-badge devops-scan-badge--duplicate";
+    duplicateBadge.textContent = "🔄 Duplicate";
+    duplicateBadge.title = `This post matches an already saved post (${reason})`;
+    duplicateBadge.style.cssText = `
+      background: #ff9800;
+      color: white;
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      margin-left: 8px;
+      cursor: help;
+    `;
+    bar.appendChild(duplicateBadge);
   }
 
   function markScanned(postEl, textLen) {
@@ -716,21 +826,8 @@ try {
         if (duplicateId) {
           match.duplicateOf = duplicateId;
           dbg(`marked as duplicate of ${duplicateId}`);
-          
-          // Increment duplicate counter for auto-scroll session
-          if (autoScrollEnabled) {
-            duplicatesFoundInSession++;
-            dbg(`duplicates in session: ${duplicatesFoundInSession}/${MAX_DUPLICATES_BEFORE_STOP}`);
-            
-            // Check if we should stop auto-scrolling
-            if (duplicatesFoundInSession >= MAX_DUPLICATES_BEFORE_STOP) {
-              dbg(`reached ${MAX_DUPLICATES_BEFORE_STOP} duplicates, stopping auto-scroll`);
-              // Stop auto-scroll and show prompt
-              setTimeout(() => {
-                showDuplicateLimitPrompt();
-              }, 500);
-            }
-          }
+          // Note: duplicate counter is incremented in checkDuplicateAndDecorate()
+          // to avoid double-counting and ensure UI badge appears first
         }
         
         matches.unshift(match); // Add to front (newest first)
@@ -1534,9 +1631,6 @@ try {
       setTimeout(scanOnce, 500);
     }
   }
-
-  // Check for URL changes every 500ms (LinkedIn SPA navigation)
-  setInterval(detectNavigation, 500);
 
   // Also listen for popstate (browser back/forward)
   window.addEventListener('popstate', () => {
