@@ -389,7 +389,7 @@ function renderMatches() {
             <option value="interviewing" ${status === 'interviewing' ? 'selected' : ''}>💼 Interviewing</option>
             <option value="offer" ${status === 'offer' ? 'selected' : ''}>🎉 Offer</option>
             <option value="rejected" ${status === 'rejected' ? 'selected' : ''}>❌ Rejected</option>
-            <option value="not-interesting" ${status === 'not-interested' ? 'selected' : ''}>🚫 Not Interested</option>
+            <option value="not-interested" ${status === 'not-interested' ? 'selected' : ''}>🚫 Not Interested</option>
           </select>
         </td>
         <td class="col-skills">${skillsHtml}</td>
@@ -553,6 +553,33 @@ function deleteMatch(id) {
     applyFilters();
   }).catch((error) => {
     console.error('Delete error:', error);
+    extensionContextValid = false;
+    showContextInvalidError();
+  });
+}
+
+function updateMatchStatus(id, newStatus) {
+  if (!isContextValid()) {
+    extensionContextValid = false;
+    showContextInvalidError();
+    return;
+  }
+  
+  // Find the match and update its status
+  const match = allMatches.find(m => m.id === id);
+  if (!match) {
+    console.error('Match not found:', id);
+    return;
+  }
+  
+  match.status = newStatus;
+  
+  safeStorageSet({ devopsSavedMatches: allMatches }).then(() => {
+    console.log(`Updated match ${id} status to: ${newStatus}`);
+    // Re-render to update the status badge
+    renderMatches();
+  }).catch((error) => {
+    console.error('Update status error:', error);
     extensionContextValid = false;
     showContextInvalidError();
   });
