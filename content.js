@@ -63,7 +63,7 @@ try {
       if (result.customKeywords) {
         DEVOPS_KEYWORDS = result.customKeywords.devopsKeywords || DEFAULT_DEVOPS_KEYWORDS;
         HIRING_SIGNALS = result.customKeywords.hiringSignals || DEFAULT_HIRING_SIGNALS;
-        EXCLUDE_KEYWORDS = result.customKeywords.invalidKeywords || DEFAULT_EXCLUDE_KEYWORDS;
+        EXCLUDE_KEYWORDS = result.customKeywords.excludeKeywords || DEFAULT_EXCLUDE_KEYWORDS;
         INVALID_KEYWORDS = result.customKeywords.invalidKeywords || DEFAULT_INVALID_KEYWORDS;
         SKILLS = result.customKeywords.skills || DEFAULT_SKILLS;
         
@@ -71,6 +71,7 @@ try {
         dbg("DevOps keywords:", DEVOPS_KEYWORDS.length);
         dbg("Hiring signals:", HIRING_SIGNALS.length);
         dbg("Exclude keywords:", EXCLUDE_KEYWORDS.length);
+        dbg("Invalid keywords:", INVALID_KEYWORDS.length);
         dbg("Skills:", SKILLS.length);
       } else {
         dbg("Using default keywords (no custom settings found)");
@@ -226,7 +227,9 @@ try {
       return { match: false };
     }
     
-    const hiringHit = findAny(t, HIRING_SIGNALS);
+    // Find ALL matching hiring signals (not just the first one)
+    const hiringHits = findAll(t, HIRING_SIGNALS);
+    const hiringHit = hiringHits.length > 0 ? hiringHits[0] : null;
     
     // ONLY match posts with hiring signals - skip DevOps-only content
     if (!hiringHit) {
@@ -275,14 +278,14 @@ try {
       
       dbg("=== MATCH FOUND ===");
       dbg("DevOps keywords:", devopsHits.join(', '));
-      dbg("Hiring signal:", hiringHit);
+      dbg("Hiring signals:", hiringHits.join(', '));
       dbg("Invalid keyword:", invalidHit || "none");
       dbg("Skills:", matchedSkills.join(', ') || "none");
       dbg("--- FULL POST TEXT (with highlights) ---");
       dbg(highlightedText);
       dbg("--- END POST TEXT ---");
     }
-    return { match: true, devopsHits, hiringHit, invalidHit, skills: matchedSkills };
+    return { match: true, devopsHits, hiringHit, hiringHits, invalidHit, skills: matchedSkills };
   }
 
   function getPostText(postEl) {
@@ -1160,24 +1163,34 @@ try {
     return false;
   }
 
-  function toggleAutoScroll() {
-    autoScrollEnabled = !autoScrollEnabled;
-    
-    if (autoScrollEnabled) {
-      dbg("Auto-scroll: ENABLED");
-      // Reset duplicate counter when starting a new auto-scroll session
-      duplicatesFoundInSession = 0;
-      dbg("Auto-scroll: Reset duplicate counter to 0");
-      performAutoScroll();
-    } else {
-      dbg("Auto-scroll: DISABLED");
-      if (autoScrollTimer) {
-        clearTimeout(autoScrollTimer);
-        autoScrollTimer = null;
-      }
-    }
-    
+  function startAutoScroll() {
+    if (autoScrollEnabled) return; // Already enabled
+    autoScrollEnabled = true;
+    dbg("Auto-scroll: ENABLED");
+    // Reset duplicate counter when starting a new auto-scroll session
+    duplicatesFoundInSession = 0;
+    dbg("Auto-scroll: Reset duplicate counter to 0");
+    performAutoScroll();
     updateAutoScrollStatus();
+  }
+
+  function stopAutoScroll() {
+    if (!autoScrollEnabled) return; // Already disabled
+    autoScrollEnabled = false;
+    dbg("Auto-scroll: DISABLED");
+    if (autoScrollTimer) {
+      clearTimeout(autoScrollTimer);
+      autoScrollTimer = null;
+    }
+    updateAutoScrollStatus();
+  }
+
+  function toggleAutoScroll() {
+    if (autoScrollEnabled) {
+      stopAutoScroll();
+    } else {
+      startAutoScroll();
+    }
   }
 
   function updateAutoScrollStatus() {
@@ -1563,8 +1576,7 @@ try {
     if (message.action === 'reloadKeywords') {
       // Reload keywords from storage when settings are updated
       dbg("Reloading keywords from settings...");
-      // Keywords will be reloaded on next scan
-      // We don't need to do anything here since classify() reads from storage
+      loadCustomKeywords();
       sendResponse({ success: true });
       return true;
     }
