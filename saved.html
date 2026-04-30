@@ -445,8 +445,8 @@
         <span class="stat-value" id="stat-hiring">0</span>
       </div>
       <div class="stat">
-        <span class="stat-label">DevOps Only</span>
-        <span class="stat-value" id="stat-devops">0</span>
+        <span class="stat-label">Fresh (≤7d)</span>
+        <span class="stat-value" style="color:#4caf50;" id="stat-fresh">0</span>
       </div>
       <div class="stat">
         <span class="stat-label">Duplicates</span>
@@ -487,6 +487,14 @@
           <option value="all">All Posts</option>
           <option value="originals-only">Originals Only</option>
           <option value="duplicates-only">Duplicates Only</option>
+        </select>
+        <select id="filter-recency">
+          <option value="all">All Time</option>
+          <option value="24h">Last 24 Hours</option>
+          <option value="3d">Last 3 Days</option>
+          <option value="7d">Last 7 Days</option>
+          <option value="14d">Last 14 Days</option>
+          <option value="30d">Last 30 Days</option>
         </select>
         <select id="sort-by">
           <option value="newest">Newest First</option>
