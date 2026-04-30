@@ -86,7 +86,7 @@ function createModal(config) {
     line-height: 1.5;
     ${styles.message || ''}
   `;
-  messageEl.textContent = message;
+  messageEl.innerHTML = message;
   
   // Buttons container
   const buttonsContainer = document.createElement('div');
