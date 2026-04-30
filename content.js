@@ -181,6 +181,121 @@ try {
   // ---- Helpers -------------------------------------------------------------
   const lower = (s) => (s || "").toLowerCase();
 
+  /**
+   * Parse LinkedIn's relative timestamp text and convert to approximate posting date
+   * Examples: "2h" → 2 hours ago, "3d" → 3 days ago, "1w" → 1 week ago, "2mo" → 2 months ago
+   * @param {string} timeText - Time text from LinkedIn (e.g., "2h", "3d", "1w", "2mo", "1y")
+   * @returns {number|null} Unix timestamp (ms) when post was created, or null if unparseable
+   */
+  function parseLinkedInTimestamp(timeText) {
+    if (!timeText) return null;
+    
+    // Clean the text: lowercase, remove whitespace, extract numbers and units
+    const cleaned = timeText.toLowerCase().trim();
+    
+    // Patterns to match: "2h", "2 hours", "2h ago", "2 hours ago", etc.
+    const patterns = [
+      // Minutes: "5m", "5 minutes", "5m ago", "5 minutes ago"
+      { regex: /(\d+)\s*(?:m|min|mins|minute|minutes)(?:\s+ago)?/, unit: 60000 },
+      // Hours: "2h", "2 hours", "2h ago", "2 hours ago"
+      { regex: /(\d+)\s*(?:h|hr|hrs|hour|hours)(?:\s+ago)?/, unit: 3600000 },
+      // Days: "3d", "3 days", "3d ago", "3 days ago"
+      { regex: /(\d+)\s*(?:d|day|days)(?:\s+ago)?/, unit: 86400000 },
+      // Weeks: "1w", "1 week", "1w ago", "1 week ago"
+      { regex: /(\d+)\s*(?:w|wk|week|weeks)(?:\s+ago)?/, unit: 604800000 },
+      // Months: "2mo", "2 months", "2mo ago", "2 months ago"
+      { regex: /(\d+)\s*(?:mo|mon|month|months)(?:\s+ago)?/, unit: 2592000000 }, // ~30 days
+      // Years: "1y", "1 year", "1y ago", "1 year ago"
+      { regex: /(\d+)\s*(?:y|yr|year|years)(?:\s+ago)?/, unit: 31536000000 } // 365 days
+    ];
+    
+    for (const { regex, unit } of patterns) {
+      const match = cleaned.match(regex);
+      if (match) {
+        const value = parseInt(match[1], 10);
+        if (!isNaN(value)) {
+          const ageMs = value * unit;
+          const postTimestamp = Date.now() - ageMs;
+          dbg(`Parsed timestamp: "${timeText}" → ${value} units ago → ${new Date(postTimestamp).toISOString()}`);
+          return postTimestamp;
+        }
+      }
+    }
+    
+    // Special cases
+    if (/just\s+now|now|seconds?\s+ago/i.test(cleaned)) {
+      return Date.now();
+    }
+    
+    dbg(`Failed to parse timestamp: "${timeText}"`);
+    return null;
+  }
+  
+  /**
+   * Extract post age from LinkedIn post element
+   * Looks for timestamp text in common LinkedIn selectors
+   * @param {HTMLElement} postEl - Post element
+   * @returns {number|null} Unix timestamp when post was created, or null if not found
+   */
+  function extractPostAge(postEl) {
+    // Common selectors for LinkedIn timestamps
+    const timeSelectors = [
+      '.update-components-actor__sub-description time',
+      '.feed-shared-actor__sub-description time',
+      'time.update-components-actor__sub-description',
+      'time[datetime]',
+      '.update-components-actor__sub-description',
+      '.feed-shared-actor__sub-description',
+      '[data-test-id="main-feed-activity-card__meta"] time',
+      'span[aria-hidden="true"]' // Sometimes LinkedIn uses this for timestamps
+    ];
+    
+    for (const selector of timeSelectors) {
+      const timeEl = postEl.querySelector(selector);
+      if (timeEl) {
+        // Try datetime attribute first (ISO format)
+        const datetime = timeEl.getAttribute('datetime');
+        if (datetime) {
+          try {
+            const timestamp = new Date(datetime).getTime();
+            if (!isNaN(timestamp)) {
+              dbg(`Extracted timestamp from datetime attribute: ${datetime}`);
+              return timestamp;
+            }
+          } catch (e) {
+            // Fall through to text parsing
+          }
+        }
+        
+        // Try parsing the text content
+        const timeText = (timeEl.innerText || timeEl.textContent || '').trim();
+        if (timeText) {
+          const timestamp = parseLinkedInTimestamp(timeText);
+          if (timestamp) {
+            return timestamp;
+          }
+        }
+      }
+    }
+    
+    // Fallback: search for time-like text in the post header area
+    const headerEl = postEl.querySelector('.update-components-header, .feed-shared-update-v2__description-wrapper');
+    if (headerEl) {
+      const headerText = (headerEl.innerText || headerEl.textContent || '').trim();
+      // Look for patterns like "2h • Public" or "3d ago"
+      const timeMatch = headerText.match(/(\d+(?:m|h|d|w|mo|y)(?:\s+ago)?)/i);
+      if (timeMatch) {
+        const timestamp = parseLinkedInTimestamp(timeMatch[1]);
+        if (timestamp) {
+          return timestamp;
+        }
+      }
+    }
+    
+    dbg('Could not extract post age - no timestamp found');
+    return null;
+  }
+
   function findAny(haystack, needles) {
     return needles.find((n) => {
       // Use word boundary matching for short keywords (3 chars or less)
@@ -790,11 +905,17 @@ try {
         // Get the current page URL (feed, group, search page)
         const sourceUrl = window.location.href;
         
+        // Extract post age from LinkedIn timestamp
+        const postAge = extractPostAge(postEl);
+        const postAgeText = postEl.querySelector('.update-components-actor__sub-description, .feed-shared-actor__sub-description, time')?.textContent?.trim() || null;
+        
         const match = {
           id: `match:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
           url: url || null,
           sourceUrl: sourceUrl, // Page URL where this post was found
-          timestamp: Date.now(),
+          timestamp: Date.now(), // When we saved this match
+          postTimestamp: postAge, // When the post was originally created (parsed from LinkedIn)
+          postAgeText: postAgeText, // Original timestamp text from LinkedIn (e.g., "2h", "3d ago")
           author: author,
           snippet: snippet,
           fullText: text, // Store complete post text for detailed viewing
