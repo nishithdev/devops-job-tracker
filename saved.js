@@ -10,6 +10,12 @@ let pageSize = 50;
 let sortColumn = 'timestamp';
 let sortDirection = 'desc';
 
+// Virtual scrolling state (active only when pageSize === Infinity / "Show All")
+const VIRTUAL_BATCH_SIZE = 100;     // rows rendered per batch
+const VIRTUAL_THRESHOLD = 150;      // total rows above which virtual mode activates
+let virtualRenderedCount = 0;       // how many rows currently in DOM (virtual mode)
+let virtualSentinelObserver = null; // IntersectionObserver for "load more" sentinel
+
 function showContextInvalidError() {
   const container = document.getElementById('matches-container');
   container.innerHTML = `
@@ -226,9 +232,278 @@ function updateBulkActions() {
   }
 }
 
+// Build the HTML string for a single match row. Extracted so virtual-scroll
+// "load more" batches can reuse the exact same render logic.
+function buildRowHtml(match) {
+  const date = new Date(match.timestamp);
+  const dateStr = date.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+
+  // Post age indicator (when the post was originally created on LinkedIn)
+  let postAgeDisplay = '';
+  if (match.postTimestamp) {
+    const postDate = new Date(match.postTimestamp);
+    const now = Date.now();
+    const ageMs = now - match.postTimestamp;
+    const ageDays = Math.floor(ageMs / (24 * 60 * 60 * 1000));
+    const ageHours = Math.floor(ageMs / (60 * 60 * 1000));
+
+    let ageText = '';
+    let ageColor = '#4caf50';
+
+    if (ageHours < 24) {
+      ageText = `${ageHours}h old`;
+      ageColor = '#4caf50';
+    } else if (ageDays < 3) {
+      ageText = `${ageDays}d old`;
+      ageColor = '#8bc34a';
+    } else if (ageDays < 7) {
+      ageText = `${ageDays}d old`;
+      ageColor = '#ffc107';
+    } else if (ageDays < 14) {
+      ageText = `${ageDays}d old`;
+      ageColor = '#ff9800';
+    } else {
+      ageText = `${ageDays}d old`;
+      ageColor = '#f44336';
+    }
+
+    const postDateStr = postDate.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric'
+    });
+
+    postAgeDisplay = `<div style="margin-top:4px;"><span style="background:${ageColor};color:white;padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600;" title="Posted on ${postDateStr} (LinkedIn: ${escapeHtml(match.postAgeText || 'unknown')})">${ageText}</span></div>`;
+  }
+
+  // Keywords badge - handle both old (single keyword) and new (multiple keywords) formats
+  let keywordBadge = '';
+  const keywords = match.devopsKeywords || [match.devopsKeyword];
+  const keywordList = keywords.map(k => escapeHtml(k)).join(', ');
+
+  if (match.isHiring) {
+    keywordBadge = `<span class="badge badge-hiring">🔥 ${keywordList} + ${escapeHtml(match.hiringSignal)}</span>`;
+  } else {
+    keywordBadge = `<span class="badge badge-devops">DevOps · ${keywordList}</span>`;
+  }
+
+  if (match.duplicateOf) {
+    keywordBadge += ` <span class="badge badge-duplicate" style="background:#ff9800;color:white;padding:3px 8px;border-radius:4px;font-size:11px;margin-left:4px;" title="Duplicate of ${match.duplicateOf}">🔄 Duplicate</span>`;
+  }
+
+  // Status badge
+  const status = match.status || 'new';
+  const statusConfig = {
+    'new': { label: 'New', color: '#1976d2', bg: '#e3f2fd' },
+    'interested': { label: 'Interested', color: '#7b1fa2', bg: '#f3e5f5' },
+    'applied': { label: 'Applied', color: '#0288d1', bg: '#e1f5fe' },
+    'interviewing': { label: 'Interviewing', color: '#f57c00', bg: '#fff3e0' },
+    'offer': { label: 'Offer', color: '#388e3c', bg: '#e8f5e9' },
+    'rejected': { label: 'Rejected', color: '#d32f2f', bg: '#ffebee' },
+    'not-interested': { label: 'Not Interested', color: '#616161', bg: '#f5f5f5' }
+  };
+  const statusInfo = statusConfig[status] || statusConfig['new'];
+
+  // Skills column
+  let skillsHtml = '<span style="color:#999;font-size:12px;">None</span>';
+  if (match.skills && match.skills.length > 0) {
+    skillsHtml = match.skills.slice(0, 5).map(skill =>
+      `<span class="skill-tag" style="background:#e3f2fd;color:#1565c0;padding:2px 6px;border-radius:3px;font-size:11px;margin-right:4px;display:inline-block;margin-bottom:2px;">${escapeHtml(skill)}</span>`
+    ).join('');
+    if (match.skills.length > 5) {
+      skillsHtml += `<span style="color:#999;font-size:11px;margin-left:4px;">+${match.skills.length - 5} more</span>`;
+    }
+  }
+
+  // Emails column
+  let emailsHtml = '<span style="color:#999;font-size:12px;">None</span>';
+  if (match.emails && match.emails.length > 0) {
+    emailsHtml = match.emails.map(email =>
+      `<a href="mailto:${escapeHtml(email)}" class="email-link" title="Email: ${escapeHtml(email)}">${escapeHtml(email)}</a>`
+    ).join('');
+  }
+
+  // Full post text with keyword highlighting
+  const fullText = match.fullText || match.snippet || 'No text available';
+  let postTextHtml = escapeHtml(fullText);
+
+  keywords.forEach(keyword => {
+    const regex = new RegExp(`\\b(${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\b`, 'gi');
+    postTextHtml = postTextHtml.replace(regex, '<mark style="background:#fff59d;color:#000;font-weight:600;padding:1px 2px;border-radius:2px;">$1</mark>');
+  });
+
+  if (match.hiringSignal) {
+    const regex = new RegExp(`\\b(${match.hiringSignal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\b`, 'gi');
+    postTextHtml = postTextHtml.replace(regex, '<mark style="background:#c8e6c9;color:#1b5e20;font-weight:600;padding:1px 2px;border-radius:2px;">$1</mark>');
+  }
+
+  if (match.invalidKeyword) {
+    const regex = new RegExp(`\\b(${match.invalidKeyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\b`, 'gi');
+    postTextHtml = postTextHtml.replace(regex, '<mark style="background:#ffe0b2;color:#e65100;font-weight:600;padding:1px 2px;border-radius:2px;">$1</mark>');
+  }
+
+  const charLimit = 300;
+  let postDisplayHtml;
+
+  if (fullText.length > charLimit) {
+    const previewText = escapeHtml(fullText.substring(0, charLimit));
+    let previewHtml = previewText;
+    keywords.forEach(keyword => {
+      const regex = new RegExp(`\\b(${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\b`, 'gi');
+      previewHtml = previewHtml.replace(regex, '<mark style="background:#fff59d;color:#000;font-weight:600;padding:1px 2px;border-radius:2px;">$1</mark>');
+    });
+    if (match.hiringSignal) {
+      const regex = new RegExp(`\\b(${match.hiringSignal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\b`, 'gi');
+      previewHtml = previewHtml.replace(regex, '<mark style="background:#c8e6c9;color:#1b5e20;font-weight:600;padding:1px 2px;border-radius:2px;">$1</mark>');
+    }
+    if (match.invalidKeyword) {
+      const regex = new RegExp(`\\b(${match.invalidKeyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\b`, 'gi');
+      previewHtml = previewHtml.replace(regex, '<mark style="background:#ffe0b2;color:#e65100;font-weight:600;padding:1px 2px;border-radius:2px;">$1</mark>');
+    }
+
+    postDisplayHtml = `
+      <div class="post-text-container">
+        <div class="post-text-preview" data-match-id="${match.id}">${previewHtml}...</div>
+        <div class="post-text-full" data-match-id="${match.id}" style="display:none;">${postTextHtml}</div>
+        <button class="see-more-btn" data-match-id="${match.id}" style="color:#0a66c2;background:none;border:none;padding:4px 0;cursor:pointer;font-size:14px;font-weight:600;margin-top:4px;">
+          ...see more
+        </button>
+      </div>
+    `;
+  } else {
+    postDisplayHtml = `<div class="post-text-full">${postTextHtml}</div>`;
+  }
+
+  // Source URL column
+  let sourceUrlHtml = '<span style="color:#999;font-size:12px;">N/A</span>';
+  if (match.sourceUrl) {
+    let urlLabel = 'LinkedIn';
+    try {
+      const url = new URL(match.sourceUrl);
+      const pathParts = url.pathname.split('/').filter(p => p);
+      if (pathParts.length > 0) {
+        if (pathParts[0] === 'feed') urlLabel = '📰 Feed';
+        else if (pathParts[0] === 'groups') urlLabel = '👥 Group';
+        else if (pathParts[0] === 'search') urlLabel = '🔍 Search';
+        else if (pathParts[0] === 'jobs') urlLabel = '💼 Jobs';
+        else urlLabel = pathParts[0].charAt(0).toUpperCase() + pathParts[0].slice(1);
+      }
+    } catch (e) {
+      urlLabel = 'LinkedIn';
+    }
+    sourceUrlHtml = `<a href="${escapeHtml(match.sourceUrl)}" target="_blank" style="color:#0a66c2;text-decoration:none;font-size:12px;" title="${escapeHtml(match.sourceUrl)}">${urlLabel} ↗</a>`;
+  }
+
+  const openBtn = match.url
+    ? `<a href="${escapeHtml(match.url)}" target="_blank" class="btn-open">Open ↗</a>`
+    : '';
+
+  const isSelected = selectedRows.has(match.id);
+  const selectedClass = isSelected ? ' class="selected"' : '';
+
+  return `
+    <tr data-id="${match.id}"${selectedClass}>
+      <td class="col-select"><input type="checkbox" class="row-checkbox" data-match-id="${match.id}" ${isSelected ? 'checked' : ''}></td>
+      <td class="col-timestamp">${dateStr}${postAgeDisplay}</td>
+      <td class="col-keywords">${keywordBadge}</td>
+      <td class="col-status">
+        <select class="status-dropdown" data-match-id="${match.id}">
+          <option value="new" ${status === 'new' ? 'selected' : ''}>🆕 New</option>
+          <option value="interested" ${status === 'interested' ? 'selected' : ''}>⭐ Interested</option>
+          <option value="applied" ${status === 'applied' ? 'selected' : ''}>📧 Applied</option>
+          <option value="interviewing" ${status === 'interviewing' ? 'selected' : ''}>💼 Interviewing</option>
+          <option value="offer" ${status === 'offer' ? 'selected' : ''}>🎉 Offer</option>
+          <option value="rejected" ${status === 'rejected' ? 'selected' : ''}>❌ Rejected</option>
+          <option value="not-interested" ${status === 'not-interested' ? 'selected' : ''}>🚫 Not Interested</option>
+        </select>
+      </td>
+      <td class="col-skills">${skillsHtml}</td>
+      <td class="col-source-url">${sourceUrlHtml}</td>
+      <td class="col-snippet" style="max-width:800px;white-space:pre-wrap;word-wrap:break-word;">${postDisplayHtml}</td>
+      <td class="col-emails">${emailsHtml}</td>
+      <td class="col-actions">
+        ${openBtn}
+        <button class="btn-delete" data-match-id="${match.id}">Delete</button>
+      </td>
+    </tr>
+  `;
+}
+
+// Disconnect any existing virtual-scroll sentinel observer (called before
+// every full re-render to avoid stale observers firing on detached DOM).
+function teardownVirtualScroll() {
+  if (virtualSentinelObserver) {
+    virtualSentinelObserver.disconnect();
+    virtualSentinelObserver = null;
+  }
+  virtualRenderedCount = 0;
+}
+
+// Append the next batch of rows in virtual-scroll mode and re-arm the
+// sentinel observer. Called when the sentinel scrolls into view.
+function loadMoreVirtualRows() {
+  const tbody = document.querySelector('#matches-container tbody');
+  if (!tbody) return;
+
+  const nextEnd = Math.min(
+    virtualRenderedCount + VIRTUAL_BATCH_SIZE,
+    filteredMatches.length
+  );
+  if (nextEnd <= virtualRenderedCount) return; // nothing left
+
+  // Build HTML for next batch and inject as one DOM mutation.
+  // Using innerHTML on a wrapper + adoptNode is the fastest path for
+  // string-based row construction (faster than createElement loops).
+  const html = filteredMatches.slice(virtualRenderedCount, nextEnd)
+    .map(buildRowHtml).join('');
+
+  const template = document.createElement('template');
+  template.innerHTML = `<table><tbody>${html}</tbody></table>`;
+  const newRows = template.content.querySelector('tbody').children;
+
+  // Move sentinel out of the way, append new rows, then re-add sentinel.
+  const sentinel = tbody.querySelector('.virtual-sentinel-row');
+  const frag = document.createDocumentFragment();
+  while (newRows.length) {
+    frag.appendChild(newRows[0]); // moves node out of newRows
+  }
+
+  if (sentinel) {
+    tbody.insertBefore(frag, sentinel);
+  } else {
+    tbody.appendChild(frag);
+  }
+
+  virtualRenderedCount = nextEnd;
+  displayedMatches = filteredMatches.slice(0, virtualRenderedCount);
+
+  // If everything rendered, remove sentinel and observer
+  if (virtualRenderedCount >= filteredMatches.length) {
+    if (sentinel) sentinel.remove();
+    if (virtualSentinelObserver) {
+      virtualSentinelObserver.disconnect();
+      virtualSentinelObserver = null;
+    }
+  }
+}
+
+// Main render entry point. Handles three modes:
+//   1. Empty state (no matches)
+//   2. Virtual-scroll mode (pageSize=Infinity AND > VIRTUAL_THRESHOLD rows)
+//   3. Standard pagination/render-all mode
+// Reuses tbody-only swap when table chrome already exists to skip re-parsing
+// the thead on every selection toggle / sort.
 function renderMatches() {
+  teardownVirtualScroll();
+
   const container = document.getElementById('matches-container');
-  
+
   if (filteredMatches.length === 0) {
     container.innerHTML = `
       <div class="empty-state">
@@ -238,257 +513,79 @@ function renderMatches() {
     `;
     return;
   }
-  
-  // Calculate pagination
-  const start = (currentPage - 1) * pageSize;
-  const end = pageSize === Infinity ? filteredMatches.length : start + pageSize;
-  displayedMatches = filteredMatches.slice(start, end);
-  
-  const rows = displayedMatches.map(match => {
-    const date = new Date(match.timestamp);
-    const dateStr = date.toLocaleDateString('en-US', { 
-      month: 'short', 
-      day: 'numeric', 
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
+
+  // Decide rendering strategy
+  const isVirtualMode =
+    pageSize === Infinity && filteredMatches.length > VIRTUAL_THRESHOLD;
+
+  let rowsHtml;
+  if (isVirtualMode) {
+    // Render only the first batch; remaining rows lazy-loaded via sentinel.
+    virtualRenderedCount = Math.min(VIRTUAL_BATCH_SIZE, filteredMatches.length);
+    displayedMatches = filteredMatches.slice(0, virtualRenderedCount);
+    rowsHtml = displayedMatches.map(buildRowHtml).join('') +
+      `<tr class="virtual-sentinel-row" aria-hidden="true"><td colspan="9" style="height:1px;padding:0;border:0;"></td></tr>`;
+  } else {
+    // Standard pagination (or full render when 'all' is selected and below threshold)
+    const start = (currentPage - 1) * pageSize;
+    const end = pageSize === Infinity ? filteredMatches.length : start + pageSize;
+    displayedMatches = filteredMatches.slice(start, end);
+    rowsHtml = displayedMatches.map(buildRowHtml).join('');
+  }
+
+  // Determine if all visible rows are selected (for select-all checkbox state)
+  const allSelected =
+    displayedMatches.length > 0 &&
+    displayedMatches.every(m => selectedRows.has(m.id));
+
+  // Fast-path: if table chrome already exists, swap only tbody to skip
+  // re-parsing the thead and avoid losing focus on inputs in the header.
+  const existingTbody = container.querySelector('table tbody');
+  const existingSelectAll = container.querySelector('#select-all');
+  if (existingTbody && existingSelectAll) {
+    existingTbody.innerHTML = rowsHtml;
+    existingSelectAll.checked = allSelected;
+    // Update sort indicators on existing thead
+    container.querySelectorAll('th.sortable').forEach(th => {
+      const col = th.getAttribute('data-column');
+      th.classList.remove('sorted-asc', 'sorted-desc');
+      if (col === sortColumn) {
+        th.classList.add(sortDirection === 'asc' ? 'sorted-asc' : 'sorted-desc');
+      }
     });
-    
-    // Post age indicator (when the post was originally created on LinkedIn)
-    let postAgeDisplay = '';
-    if (match.postTimestamp) {
-      const postDate = new Date(match.postTimestamp);
-      const now = Date.now();
-      const ageMs = now - match.postTimestamp;
-      const ageDays = Math.floor(ageMs / (24 * 60 * 60 * 1000));
-      const ageHours = Math.floor(ageMs / (60 * 60 * 1000));
-      
-      let ageText = '';
-      let ageColor = '#4caf50'; // Green for fresh
-      
-      if (ageHours < 24) {
-        ageText = `${ageHours}h old`;
-        ageColor = '#4caf50'; // Green - very fresh
-      } else if (ageDays < 3) {
-        ageText = `${ageDays}d old`;
-        ageColor = '#8bc34a'; // Light green - fresh
-      } else if (ageDays < 7) {
-        ageText = `${ageDays}d old`;
-        ageColor = '#ffc107'; // Yellow - moderate
-      } else if (ageDays < 14) {
-        ageText = `${ageDays}d old`;
-        ageColor = '#ff9800'; // Orange - aging
-      } else {
-        ageText = `${ageDays}d old`;
-        ageColor = '#f44336'; // Red - old
-      }
-      
-      const postDateStr = postDate.toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric'
-      });
-      
-      postAgeDisplay = `<div style="margin-top:4px;"><span style="background:${ageColor};color:white;padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600;" title="Posted on ${postDateStr} (LinkedIn: ${escapeHtml(match.postAgeText || 'unknown')})">${ageText}</span></div>`;
-    }
-    
-    // Keywords badge - handle both old (single keyword) and new (multiple keywords) formats
-    let keywordBadge = '';
-    const keywords = match.devopsKeywords || [match.devopsKeyword]; // Support both formats
-    const keywordList = keywords.map(k => escapeHtml(k)).join(', ');
-    
-    if (match.isHiring) {
-      keywordBadge = `<span class="badge badge-hiring">🔥 ${keywordList} + ${escapeHtml(match.hiringSignal)}</span>`;
-    } else {
-      keywordBadge = `<span class="badge badge-devops">DevOps · ${keywordList}</span>`;
-    }
-    
-    // Add duplicate badge if this is a duplicate
-    if (match.duplicateOf) {
-      keywordBadge += ` <span class="badge badge-duplicate" style="background:#ff9800;color:white;padding:3px 8px;border-radius:4px;font-size:11px;margin-left:4px;" title="Duplicate of ${match.duplicateOf}">🔄 Duplicate</span>`;
-    }
-    
-    // Status badge with color coding
-    const status = match.status || 'new';
-    const statusConfig = {
-      'new': { label: 'New', color: '#1976d2', bg: '#e3f2fd' },
-      'interested': { label: 'Interested', color: '#7b1fa2', bg: '#f3e5f5' },
-      'applied': { label: 'Applied', color: '#0288d1', bg: '#e1f5fe' },
-      'interviewing': { label: 'Interviewing', color: '#f57c00', bg: '#fff3e0' },
-      'offer': { label: 'Offer', color: '#388e3c', bg: '#e8f5e9' },
-      'rejected': { label: 'Rejected', color: '#d32f2f', bg: '#ffebee' },
-      'not-interested': { label: 'Not Interested', color: '#616161', bg: '#f5f5f5' }
-    };
-    const statusInfo = statusConfig[status] || statusConfig['new'];
-    const statusBadge = `
-      <span class="status-badge" style="background:${statusInfo.bg};color:${statusInfo.color};padding:4px 8px;border-radius:4px;font-size:11px;font-weight:600;white-space:nowrap;">
-        ${statusInfo.label}
-      </span>
-    `;
-    
-    // Skills column
-    let skillsHtml = '<span style="color:#999;font-size:12px;">None</span>';
-    if (match.skills && match.skills.length > 0) {
-      skillsHtml = match.skills.slice(0, 5).map(skill => 
-        `<span class="skill-tag" style="background:#e3f2fd;color:#1565c0;padding:2px 6px;border-radius:3px;font-size:11px;margin-right:4px;display:inline-block;margin-bottom:2px;">${escapeHtml(skill)}</span>`
-      ).join('');
-      if (match.skills.length > 5) {
-        skillsHtml += `<span style="color:#999;font-size:11px;margin-left:4px;">+${match.skills.length - 5} more</span>`;
-      }
-    }
-    
-    // Emails column
-    let emailsHtml = '<span style="color:#999;font-size:12px;">None</span>';
-    if (match.emails && match.emails.length > 0) {
-      emailsHtml = match.emails.map(email => 
-        `<a href="mailto:${escapeHtml(email)}" class="email-link" title="Email: ${escapeHtml(email)}">${escapeHtml(email)}</a>`
-      ).join('');
-    }
-    
-    // Full post text with keyword highlighting
-    const fullText = match.fullText || match.snippet || 'No text available';
-    let postTextHtml = escapeHtml(fullText);
-    
-    // Highlight DevOps keywords in yellow
-    keywords.forEach(keyword => {
-      const regex = new RegExp(`\\b(${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\b`, 'gi');
-      postTextHtml = postTextHtml.replace(regex, '<mark style="background:#fff59d;color:#000;font-weight:600;padding:1px 2px;border-radius:2px;">$1</mark>');
-    });
-    
-    // Highlight hiring signal in green background
-    if (match.hiringSignal) {
-      const regex = new RegExp(`\\b(${match.hiringSignal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\b`, 'gi');
-      postTextHtml = postTextHtml.replace(regex, '<mark style="background:#c8e6c9;color:#1b5e20;font-weight:600;padding:1px 2px;border-radius:2px;">$1</mark>');
-    }
-    
-    // Highlight invalid keyword in orange background (if present)
-    if (match.invalidKeyword) {
-      const regex = new RegExp(`\\b(${match.invalidKeyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\b`, 'gi');
-      postTextHtml = postTextHtml.replace(regex, '<mark style="background:#ffe0b2;color:#e65100;font-weight:600;padding:1px 2px;border-radius:2px;">$1</mark>');
-    }
-    
-    // Create collapsible text with "see more" functionality (LinkedIn style)
-    const charLimit = 300;
-    let postDisplayHtml;
-    
-    if (fullText.length > charLimit) {
-      const previewText = escapeHtml(fullText.substring(0, charLimit));
-      
-      // Re-apply highlights to preview
-      let previewHtml = previewText;
-      keywords.forEach(keyword => {
-        const regex = new RegExp(`\\b(${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\b`, 'gi');
-        previewHtml = previewHtml.replace(regex, '<mark style="background:#fff59d;color:#000;font-weight:600;padding:1px 2px;border-radius:2px;">$1</mark>');
-      });
-      if (match.hiringSignal) {
-        const regex = new RegExp(`\\b(${match.hiringSignal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\b`, 'gi');
-        previewHtml = previewHtml.replace(regex, '<mark style="background:#c8e6c9;color:#1b5e20;font-weight:600;padding:1px 2px;border-radius:2px;">$1</mark>');
-      }
-      if (match.invalidKeyword) {
-        const regex = new RegExp(`\\b(${match.invalidKeyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\b`, 'gi');
-        previewHtml = previewHtml.replace(regex, '<mark style="background:#ffe0b2;color:#e65100;font-weight:600;padding:1px 2px;border-radius:2px;">$1</mark>');
-      }
-      
-      postDisplayHtml = `
-        <div class="post-text-container">
-          <div class="post-text-preview" data-match-id="${match.id}">${previewHtml}...</div>
-          <div class="post-text-full" data-match-id="${match.id}" style="display:none;">${postTextHtml}</div>
-          <button class="see-more-btn" data-match-id="${match.id}" style="color:#0a66c2;background:none;border:none;padding:4px 0;cursor:pointer;font-size:14px;font-weight:600;margin-top:4px;">
-            ...see more
-          </button>
-        </div>
-      `;
-    } else {
-      postDisplayHtml = `<div class="post-text-full">${postTextHtml}</div>`;
-    }
-    
-    // Source URL column
-    let sourceUrlHtml = '<span style="color:#999;font-size:12px;">N/A</span>';
-    if (match.sourceUrl) {
-      // Extract readable part from URL (e.g., "feed", "groups/123456", "search/results")
-      let urlLabel = 'LinkedIn';
-      try {
-        const url = new URL(match.sourceUrl);
-        const pathParts = url.pathname.split('/').filter(p => p);
-        if (pathParts.length > 0) {
-          if (pathParts[0] === 'feed') {
-            urlLabel = '📰 Feed';
-          } else if (pathParts[0] === 'groups') {
-            urlLabel = '👥 Group';
-          } else if (pathParts[0] === 'search') {
-            urlLabel = '🔍 Search';
-          } else if (pathParts[0] === 'jobs') {
-            urlLabel = '💼 Jobs';
-          } else {
-            urlLabel = pathParts[0].charAt(0).toUpperCase() + pathParts[0].slice(1);
-          }
-        }
-      } catch (e) {
-        urlLabel = 'LinkedIn';
-      }
-      sourceUrlHtml = `<a href="${escapeHtml(match.sourceUrl)}" target="_blank" style="color:#0a66c2;text-decoration:none;font-size:12px;" title="${escapeHtml(match.sourceUrl)}">${urlLabel} ↗</a>`;
-    }
-    
-    // Actions column
-    const openBtn = match.url 
-      ? `<a href="${escapeHtml(match.url)}" target="_blank" class="btn-open">Open ↗</a>`
-      : '';
-    
-    const isSelected = selectedRows.has(match.id);
-    const selectedClass = isSelected ? ' class="selected"' : '';
-    
-    return `
-      <tr data-id="${match.id}"${selectedClass}>
-        <td class="col-select"><input type="checkbox" class="row-checkbox" data-match-id="${match.id}" ${isSelected ? 'checked' : ''}></td>
-        <td class="col-timestamp">${dateStr}${postAgeDisplay}</td>
-        <td class="col-keywords">${keywordBadge}</td>
-        <td class="col-status">
-          <select class="status-dropdown" data-match-id="${match.id}">
-            <option value="new" ${status === 'new' ? 'selected' : ''}>🆕 New</option>
-            <option value="interested" ${status === 'interested' ? 'selected' : ''}>⭐ Interested</option>
-            <option value="applied" ${status === 'applied' ? 'selected' : ''}>📧 Applied</option>
-            <option value="interviewing" ${status === 'interviewing' ? 'selected' : ''}>💼 Interviewing</option>
-            <option value="offer" ${status === 'offer' ? 'selected' : ''}>🎉 Offer</option>
-            <option value="rejected" ${status === 'rejected' ? 'selected' : ''}>❌ Rejected</option>
-            <option value="not-interested" ${status === 'not-interested' ? 'selected' : ''}>🚫 Not Interested</option>
-          </select>
-        </td>
-        <td class="col-skills">${skillsHtml}</td>
-        <td class="col-source-url">${sourceUrlHtml}</td>
-        <td class="col-snippet" style="max-width:800px;white-space:pre-wrap;word-wrap:break-word;">${postDisplayHtml}</td>
-        <td class="col-emails">${emailsHtml}</td>
-        <td class="col-actions">
-          ${openBtn}
-          <button class="btn-delete" data-match-id="${match.id}">Delete</button>
-        </td>
-      </tr>
-    `;
-  }).join('');
-  
-  // Determine if all rows are selected
-  const allSelected = displayedMatches.length > 0 && displayedMatches.every(m => selectedRows.has(m.id));
-  
+  } else {
+    // Full render (first paint or after empty-state)
     container.innerHTML = `
-    <table>
-      <thead>
-        <tr>
-          <th class="col-select"><input type="checkbox" id="select-all" ${allSelected ? 'checked' : ''}></th>
-          <th class="sortable${sortColumn === 'timestamp' ? (sortDirection === 'asc' ? ' sorted-asc' : ' sorted-desc') : ''}" data-column="timestamp">Date</th>
-          <th class="sortable${sortColumn === 'keyword' ? (sortDirection === 'asc' ? ' sorted-asc' : ' sorted-desc') : ''}" data-column="keyword">Keywords</th>
-          <th class="sortable${sortColumn === 'status' ? (sortDirection === 'asc' ? ' sorted-asc' : ' sorted-desc') : ''}" data-column="status">Status</th>
-          <th>Skills</th>
-          <th>Source URL</th>
-          <th>Full Post (with highlights)</th>
-          <th>Emails</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${rows}
-      </tbody>
-    </table>
-  `;
-  
+      <table>
+        <thead>
+          <tr>
+            <th class="col-select"><input type="checkbox" id="select-all" ${allSelected ? 'checked' : ''}></th>
+            <th class="sortable${sortColumn === 'timestamp' ? (sortDirection === 'asc' ? ' sorted-asc' : ' sorted-desc') : ''}" data-column="timestamp">Date</th>
+            <th class="sortable${sortColumn === 'keyword' ? (sortDirection === 'asc' ? ' sorted-asc' : ' sorted-desc') : ''}" data-column="keyword">Keywords</th>
+            <th class="sortable${sortColumn === 'status' ? (sortDirection === 'asc' ? ' sorted-asc' : ' sorted-desc') : ''}" data-column="status">Status</th>
+            <th>Skills</th>
+            <th>Source URL</th>
+            <th>Full Post (with highlights)</th>
+            <th>Emails</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    `;
+  }
+
+  // Wire up sentinel observer for virtual mode
+  if (isVirtualMode) {
+    const sentinel = container.querySelector('.virtual-sentinel-row');
+    if (sentinel) {
+      virtualSentinelObserver = new IntersectionObserver((entries) => {
+        if (entries[0].isIntersecting) loadMoreVirtualRows();
+      }, { root: container, rootMargin: '200px 0px' });
+      virtualSentinelObserver.observe(sentinel);
+    }
+  }
+
   // Event listeners are attached via delegation on container (see setupEventDelegation)
 }
 
@@ -500,17 +597,19 @@ function setupEventDelegation() {
   container.addEventListener('click', (e) => {
     const target = e.target;
     
-    // Handle select-all checkbox
+    // Handle select-all checkbox — patch DOM directly instead of full re-render
     if (target.id === 'select-all') {
       const checked = target.checked;
       displayedMatches.forEach(match => {
-        if (checked) {
-          selectedRows.add(match.id);
-        } else {
-          selectedRows.delete(match.id);
-        }
+        if (checked) selectedRows.add(match.id);
+        else selectedRows.delete(match.id);
       });
-      renderMatches();
+      // Toggle each row's checkbox + .selected class in place
+      container.querySelectorAll('tbody tr[data-id]').forEach(tr => {
+        const cb = tr.querySelector('.row-checkbox');
+        if (cb) cb.checked = checked;
+        tr.classList.toggle('selected', checked);
+      });
       updateBulkActions();
       return;
     }
