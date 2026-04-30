@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Welcome to LinkedIn DevOps Scanner</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .welcome-container {
+      max-width: 700px;
+      background: white;
+      border-radius: 16px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+      overflow: hidden;
+    }
+    .progress-bar {
+      height: 6px;
+      background: #e0e0e0;
+    }
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+      transition: width 0.3s ease;
+    }
+    .slide {
+      display: none;
+      padding: 50px 60px;
+      min-height: 500px;
+    }
+    .slide.active {
+      display: block;
+      animation: fadeIn 0.5s;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .slide-header {
+      text-align: center;
+      margin-bottom: 30px;
+    }
+    .slide-icon {
+      font-size: 64px;
+      margin-bottom: 20px;
+    }
+    .slide-title {
+      font-size: 32px;
+      font-weight: 700;
+      color: #1d1d1f;
+      margin-bottom: 10px;
+    }
+    .slide-subtitle {
+      font-size: 16px;
+      color: #666;
+      line-height: 1.6;
+    }
+    .slide-content {
+      margin-bottom: 40px;
+    }
+    .feature-list {
+      list-style: none;
+      margin: 20px 0;
+    }
+    .feature-item {
+      display: flex;
+      align-items: start;
+      gap: 12px;
+      margin-bottom: 16px;
+      padding: 16px;
+      background: #f9f9fb;
+      border-radius: 8px;
+      border-left: 4px solid #667eea;
+    }
+    .feature-icon {
+      font-size: 24px;
+      flex-shrink: 0;
+    }
+    .feature-text {
+      flex: 1;
+    }
+    .feature-title {
+      font-weight: 600;
+      margin-bottom: 4px;
+      color: #333;
+    }
+    .feature-desc {
+      font-size: 14px;
+      color: #666;
+      line-height: 1.5;
+    }
+    .btn-container {
+      display: flex;
+      gap: 12px;
+      justify-content: space-between;
+      margin-top: 30px;
+    }
+    .btn {
+      padding: 14px 28px;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-secondary {
+      background: #e0e0e0;
+      color: #333;
+    }
+    .btn-secondary:hover {
+      background: #d0d0d0;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      flex: 1;
+    }
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    }
+    .step-indicator {
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 30px;
+    }
+    .step-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #d0d0d0;
+      transition: all 0.3s;
+    }
+    .step-dot.active {
+      width: 30px;
+      border-radius: 5px;
+      background: #667eea;
+    }
+    .example-box {
+      background: #f0f7ff;
+      border: 2px solid #667eea;
+      border-radius: 8px;
+      padding: 20px;
+      margin: 20px 0;
+    }
+    .example-title {
+      font-weight: 600;
+      color: #667eea;
+      margin-bottom: 10px;
+    }
+    .example-text {
+      font-size: 14px;
+      color: #555;
+      line-height: 1.6;
+    }
+    code {
+      background: #e8e8ea;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div class="welcome-container">
+    <div class="progress-bar">
+      <div class="progress-fill" id="progress-fill" style="width: 25%"></div>
+    </div>
+
+    <!-- Slide 1: Welcome -->
+    <div class="slide active" data-slide="1">
+      <div class="step-indicator">
+        <div class="step-dot active"></div>
+        <div class="step-dot"></div>
+        <div class="step-dot"></div>
+        <div class="step-dot"></div>
+      </div>
+      <div class="slide-header">
+        <div class="slide-icon">🚀</div>
+        <h1 class="slide-title">Welcome to LinkedIn DevOps Scanner!</h1>
+        <p class="slide-subtitle">
+          Your personal AI assistant for finding DevOps job opportunities on LinkedIn
+        </p>
+      </div>
+      <div class="slide-content">
+        <ul class="feature-list">
+          <li class="feature-item">
+            <div class="feature-icon">🎯</div>
+            <div class="feature-text">
+              <div class="feature-title">Smart Detection</div>
+              <div class="feature-desc">Automatically scans LinkedIn posts for 40+ DevOps keywords and hiring signals</div>
+            </div>
+          </li>
+          <li class="feature-item">
+            <div class="feature-icon">⚡</div>
+            <div class="feature-text">
+              <div class="feature-title">Auto-Scroll Mode</div>
+              <div class="feature-desc">Let the extension scroll and collect matches while you relax</div>
+            </div>
+          </li>
+          <li class="feature-item">
+            <div class="feature-icon">📊</div>
+            <div class="feature-text">
+              <div class="feature-title">Advanced Filtering</div>
+              <div class="feature-desc">Filter by skills, exclude duplicates, and export your matches</div>
+            </div>
+          </li>
+        </ul>
+      </div>
+      <div class="btn-container">
+        <button class="btn btn-secondary" id="skip-btn">Skip Tutorial</button>
+        <button class="btn btn-primary" id="next-btn-1">Get Started →</button>
+      </div>
+    </div>
+
+    <!-- Slide 2: How It Works -->
+    <div class="slide" data-slide="2">
+      <div class="step-indicator">
+        <div class="step-dot"></div>
+        <div class="step-dot active"></div>
+        <div class="step-dot"></div>
+        <div class="step-dot"></div>
+      </div>
+      <div class="slide-header">
+        <div class="slide-icon">⚙️</div>
+        <h1 class="slide-title">How It Works</h1>
+        <p class="slide-subtitle">
+          The extension scans posts in real-time as you browse LinkedIn
+        </p>
+      </div>
+      <div class="slide-content">
+        <div class="example-box">
+          <div class="example-title">✅ Example: Matched Post</div>
+          <div class="example-text">
+            "We're <strong>hiring</strong> a Senior <strong>DevOps Engineer</strong> with <strong>Kubernetes</strong>, <strong>Terraform</strong>, and <strong>AWS</strong> experience!"
+          </div>
+        </div>
+        <p style="text-align:center; color:#666; margin:20px 0;">
+          This post would be detected because it contains:
+        </p>
+        <ul class="feature-list">
+          <li class="feature-item">
+            <div class="feature-icon">🔥</div>
+            <div class="feature-text">
+              <div class="feature-title">Hiring Signal</div>
+              <div class="feature-desc">Contains "hiring" - indicates an open position</div>
+            </div>
+          </li>
+          <li class="feature-item">
+            <div class="feature-icon">🔵</div>
+            <div class="feature-text">
+              <div class="feature-title">DevOps Keywords</div>
+              <div class="feature-desc">Multiple keywords detected: DevOps Engineer, Kubernetes, Terraform, AWS</div>
+            </div>
+          </li>
+        </ul>
+      </div>
+      <div class="btn-container">
+        <button class="btn btn-secondary" id="back-btn-2">← Back</button>
+        <button class="btn btn-primary" id="next-btn-2">Next →</button>
+      </div>
+    </div>
+
+    <!-- Slide 3: Quick Start Guide -->
+    <div class="slide" data-slide="3">
+      <div class="step-indicator">
+        <div class="step-dot"></div>
+        <div class="step-dot"></div>
+        <div class="step-dot active"></div>
+        <div class="step-dot"></div>
+      </div>
+      <div class="slide-header">
+        <div class="slide-icon">📖</div>
+        <h1 class="slide-title">Quick Start Guide</h1>
+        <p class="slide-subtitle">
+          Follow these simple steps to start finding opportunities
+        </p>
+      </div>
+      <div class="slide-content">
+        <ul class="feature-list">
+          <li class="feature-item">
+            <div class="feature-icon">1️⃣</div>
+            <div class="feature-text">
+              <div class="feature-title">Open LinkedIn Feed</div>
+              <div class="feature-desc">Visit <code>linkedin.com/feed</code> or search for DevOps-related content</div>
+            </div>
+          </li>
+          <li class="feature-item">
+            <div class="feature-icon">2️⃣</div>
+            <div class="feature-text">
+              <div class="feature-title">Start Scanning</div>
+              <div class="feature-desc">Scroll normally or click "Start Auto-Scroll" in the extension popup</div>
+            </div>
+          </li>
+          <li class="feature-item">
+            <div class="feature-icon">3️⃣</div>
+            <div class="feature-text">
+              <div class="feature-title">Review Matches</div>
+              <div class="feature-desc">Matched posts get a green outline - click "Open ↗" to view in new tab</div>
+            </div>
+          </li>
+          <li class="feature-item">
+            <div class="feature-icon">4️⃣</div>
+            <div class="feature-text">
+              <div class="feature-title">Manage Your Archive</div>
+              <div class="feature-desc">Click extension icon → "View Saved Matches" to filter and export</div>
+            </div>
+          </li>
+        </ul>
+      </div>
+      <div class="btn-container">
+        <button class="btn btn-secondary" id="back-btn-3">← Back</button>
+        <button class="btn btn-primary" id="next-btn-3">Next →</button>
+      </div>
+    </div>
+
+    <!-- Slide 4: Customization & Final -->
+    <div class="slide" data-slide="4">
+      <div class="step-indicator">
+        <div class="step-dot"></div>
+        <div class="step-dot"></div>
+        <div class="step-dot"></div>
+        <div class="step-dot active"></div>
+      </div>
+      <div class="slide-header">
+        <div class="slide-icon">🎨</div>
+        <h1 class="slide-title">Customize Your Experience</h1>
+        <p class="slide-subtitle">
+          Tailor the extension to your specific job search needs
+        </p>
+      </div>
+      <div class="slide-content">
+        <ul class="feature-list">
+          <li class="feature-item">
+            <div class="feature-icon">⚙️</div>
+            <div class="feature-text">
+              <div class="feature-title">Customize Keywords</div>
+              <div class="feature-desc">Add your own DevOps keywords, hiring signals, and exclusions in Settings</div>
+            </div>
+          </li>
+          <li class="feature-item">
+            <div class="feature-icon">🎛️</div>
+            <div class="feature-text">
+              <div class="feature-title">Speed Presets</div>
+              <div class="feature-desc">Choose from 5 auto-scroll speeds: Stealth, Slow, Balanced, Fast, or Turbo</div>
+            </div>
+          </li>
+          <li class="feature-item">
+            <div class="feature-icon">🔍</div>
+            <div class="feature-text">
+              <div class="feature-title">Smart Filters</div>
+              <div class="feature-desc">Filter saved matches by skills, hide duplicates, or search by author</div>
+            </div>
+          </li>
+        </ul>
+        <div class="example-box">
+          <div class="example-title">💡 Pro Tip</div>
+          <div class="example-text">
+            Use keyboard shortcut <code>Ctrl+Shift+S</code> (Mac: <code>Cmd+Shift+S</code>) to quickly toggle auto-scroll on/off!
+          </div>
+        </div>
+      </div>
+      <div class="btn-container">
+        <button class="btn btn-secondary" id="back-btn-4">← Back</button>
+        <button class="btn btn-primary" id="finish-btn">Start Scanning! 🚀</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="welcome.js"></script>
+</body>
+</html>
