@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DevOps Scanner - Saved Matches</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f5f5f5;
+      color: #1d1d1f;
+      padding: 20px;
+      line-height: 1.6;
+    }
+
+    .container {
+      max-width: 100%;
+      margin: 0 auto;
+      width: 100%;
+    }
+
+    header {
+      background: white;
+      padding: 20px 24px;
+      border-radius: 12px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    h1 {
+      font-size: 24px;
+      font-weight: 600;
+      color: #2e7d32;
+    }
+
+    .header-meta {
+      font-size: 14px;
+      color: #666;
+    }
+
+    .controls {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    button {
+      background: #2e7d32;
+      color: white;
+      border: none;
+      padding: 10px 18px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 500;
+      transition: background 0.2s;
+    }
+
+    button:hover {
+      background: #388e3c;
+    }
+
+    button:active {
+      background: #1b5e20;
+    }
+
+    button.secondary {
+      background: #666;
+    }
+
+    button.secondary:hover {
+      background: #777;
+    }
+
+    button.danger {
+      background: #d32f2f;
+    }
+
+    button.danger:hover {
+      background: #f44336;
+    }
+
+    .filter-group {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex: 1;
+    }
+
+    .filter-input {
+      background: white;
+      border: 1px solid #ddd;
+      color: #1d1d1f;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 14px;
+      flex: 1;
+      min-width: 200px;
+    }
+
+    .filter-input::placeholder {
+      color: #999;
+    }
+
+    select {
+      background: white;
+      border: 1px solid #ddd;
+      color: #1d1d1f;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    .matches-container {
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      overflow-x: auto;
+      max-height: calc(100vh - 320px);
+      overflow-y: auto;
+      position: relative;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 900px;
+    }
+
+    thead {
+      background: #f5f5f5;
+      border-bottom: 2px solid #e0e0e0;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    th {
+      text-align: left;
+      padding: 12px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      cursor: pointer;
+      user-select: none;
+      position: relative;
+    }
+
+    th:hover {
+      background: #ebebeb;
+    }
+
+    th.sortable::after {
+      content: ' ⇅';
+      opacity: 0.3;
+      font-size: 11px;
+    }
+
+    th.sorted-asc::after {
+      content: ' ▲';
+      opacity: 1;
+      color: #2e7d32;
+    }
+
+    th.sorted-desc::after {
+      content: ' ▼';
+      opacity: 1;
+      color: #2e7d32;
+    }
+
+    th input[type="checkbox"] {
+      cursor: pointer;
+      width: 16px;
+      height: 16px;
+    }
+
+    td {
+      padding: 16px;
+      border-bottom: 1px solid #f0f0f0;
+      vertical-align: top;
+      font-size: 14px;
+    }
+
+    tr:hover {
+      background: #fafafa;
+    }
+
+    tr.selected {
+      background: #e8f5e9;
+    }
+
+    tr.selected:hover {
+      background: #d4edda;
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    .col-select {
+      width: 40px;
+      text-align: center;
+    }
+
+    .col-select input[type="checkbox"] {
+      cursor: pointer;
+      width: 16px;
+      height: 16px;
+    }
+
+    .col-timestamp {
+      color: #666;
+      font-size: 13px;
+      white-space: nowrap;
+      min-width: 120px;
+    }
+
+    .col-keywords {
+      min-width: 160px;
+    }
+
+    .col-snippet {
+      max-width: 800px;
+      color: #333;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+
+    .col-emails {
+      min-width: 180px;
+    }
+
+    .col-actions {
+      white-space: nowrap;
+      min-width: 140px;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .badge-hiring {
+      background: #e8f5e9;
+      color: #2e7d32;
+    }
+
+    .badge-devops {
+      background: #e3f2fd;
+      color: #1565c0;
+    }
+
+    .email-link {
+      color: #1565c0;
+      text-decoration: none;
+      display: block;
+      font-size: 13px;
+      margin-bottom: 4px;
+    }
+
+    .email-link:hover {
+      text-decoration: underline;
+    }
+
+    .btn-open {
+      background: #2e7d32;
+      color: white;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      text-decoration: none;
+      display: inline-block;
+      transition: background 0.2s;
+      margin-right: 6px;
+    }
+
+    .btn-open:hover {
+      background: #388e3c;
+    }
+
+    .btn-delete {
+      background: #fff;
+      color: #d32f2f;
+      border: 1px solid #d32f2f;
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+
+    .btn-delete:hover {
+      background: #d32f2f;
+      color: white;
+    }
+
+    .empty-state {
+      background: white;
+      padding: 60px 40px;
+      text-align: center;
+      border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    }
+
+    .empty-state h2 {
+      font-size: 20px;
+      color: #666;
+      margin-bottom: 12px;
+    }
+
+    .empty-state p {
+      color: #999;
+      font-size: 14px;
+    }
+
+    .stats-bar {
+      background: white;
+      padding: 16px 20px;
+      border-radius: 12px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      display: flex;
+      gap: 24px;
+      align-items: center;
+    }
+
+    .stat {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .stat-label {
+      font-size: 12px;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .stat-value {
+      font-size: 24px;
+      font-weight: 700;
+      color: #2e7d32;
+      margin-top: 4px;
+    }
+
+    .bulk-actions {
+      background: #fff3cd;
+      border: 1px solid #ffc107;
+      padding: 12px 20px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      display: none;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .bulk-actions.visible {
+      display: flex;
+    }
+
+    .bulk-actions-text {
+      flex: 1;
+      font-size: 14px;
+      font-weight: 500;
+      color: #856404;
+    }
+
+    .pagination {
+      background: white;
+      padding: 16px 20px;
+      border-radius: 12px;
+      margin-top: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .pagination-info {
+      font-size: 14px;
+      color: #666;
+    }
+
+    .pagination-controls {
+      display: flex;
+      gap: 8px;
+    }
+
+    .pagination-controls button {
+      padding: 8px 16px;
+      font-size: 13px;
+    }
+
+    .pagination-controls button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+      opacity: 0.5;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <h1>Saved Matches</h1>
+        <div class="header-meta" id="total-count">0 matches saved</div>
+      </div>
+    </header>
+
+    <div class="stats-bar">
+      <div class="stat">
+        <span class="stat-label">Total Saved</span>
+        <span class="stat-value" id="stat-total">0</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">With Hiring Signal</span>
+        <span class="stat-value" id="stat-hiring">0</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">DevOps Only</span>
+        <span class="stat-value" id="stat-devops">0</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Duplicates</span>
+        <span class="stat-value" style="color:#ff9800;" id="stat-duplicates">0</span>
+      </div>
+    </div>
+
+    <div class="controls">
+      <div class="filter-group">
+        <input type="text" class="filter-input" id="filter-input" placeholder="Search by keyword, snippet, email, or skills...">
+        <select id="filter-type">
+          <option value="all">All Matches</option>
+          <option value="hiring">Hiring Posts Only</option>
+          <option value="devops">DevOps Only</option>
+        </select>
+        <select id="filter-skill">
+          <option value="all">All Skills</option>
+          <option value="docker">Docker</option>
+          <option value="kubernetes">Kubernetes</option>
+          <option value="k8s">K8s</option>
+          <option value="terraform">Terraform</option>
+          <option value="ansible">Ansible</option>
+          <option value="jenkins">Jenkins</option>
+          <option value="github actions">GitHub Actions</option>
+          <option value="aws">AWS</option>
+          <option value="azure">Azure</option>
+          <option value="gcp">GCP</option>
+          <option value="python">Python</option>
+          <option value="bash">Bash</option>
+          <option value="golang">Golang</option>
+          <option value="java">Java</option>
+          <option value="prometheus">Prometheus</option>
+          <option value="grafana">Grafana</option>
+          <option value="helm">Helm</option>
+          <option value="argocd">ArgoCD</option>
+        </select>
+        <select id="filter-duplicate">
+          <option value="all">All Posts</option>
+          <option value="originals-only">Originals Only</option>
+          <option value="duplicates-only">Duplicates Only</option>
+        </select>
+        <select id="sort-by">
+          <option value="newest">Newest First</option>
+          <option value="oldest">Oldest First</option>
+        </select>
+        <select id="page-size">
+          <option value="25">25 per page</option>
+          <option value="50" selected>50 per page</option>
+          <option value="100">100 per page</option>
+          <option value="all">Show All</option>
+        </select>
+      </div>
+      <button id="btn-refresh">Refresh</button>
+      <button id="btn-copy-emails" class="secondary">Copy All Emails</button>
+      <button id="btn-export" class="secondary">Export JSON</button>
+      <button id="btn-clean-duplicates" class="secondary" style="background:#ff9800;">Clean Duplicates</button>
+      <button id="btn-clear-all" class="danger">Clear All</button>
+    </div>
+
+    <div class="bulk-actions" id="bulk-actions">
+      <span class="bulk-actions-text" id="bulk-actions-text">0 rows selected</span>
+      <button id="btn-delete-selected" class="danger">Delete Selected</button>
+      <button id="btn-export-selected" class="secondary">Export Selected</button>
+      <button id="btn-deselect-all" class="secondary">Deselect All</button>
+    </div>
+
+    <div class="matches-container" id="matches-container">
+      <div class="empty-state">
+        <h2>No saved matches yet</h2>
+        <p>Matches will appear here as you browse LinkedIn</p>
+      </div>
+    </div>
+
+    <div class="pagination" id="pagination" style="display:none;">
+      <div class="pagination-info" id="pagination-info">Showing 1-50 of 100</div>
+      <div class="pagination-controls">
+        <button id="btn-first-page">First</button>
+        <button id="btn-prev-page">Previous</button>
+        <button id="btn-next-page">Next</button>
+        <button id="btn-last-page">Last</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Shared utilities -->
+  <script src="shared/utils.js"></script>
+  <script src="shared/storageUtils.js"></script>
+  <script src="shared/formatters.js"></script>
+  
+  <script src="saved.js"></script>
+</body>
+</html>
