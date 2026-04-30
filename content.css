@@ -1,0 +1,152 @@
+/* Highlight a matched post */
+.devops-scan-match {
+  outline: 2px solid #2e7d32 !important;
+  outline-offset: 2px;
+  border-radius: 8px;
+  box-shadow: 0 0 0 4px rgba(46, 125, 50, 0.08);
+  transition: outline-color 0.15s ease;
+}
+
+/* Floating bar in the top-right of a matched post */
+.devops-scan-bar {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 9999;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  pointer-events: auto;
+}
+
+.devops-scan-badge {
+  background: #1565c0;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 12px;
+  letter-spacing: 0.2px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  text-transform: capitalize;
+  max-width: 280px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
+.devops-scan-badge--hiring {
+  background: #2e7d32;
+}
+
+.devops-scan-badge--invalid {
+  background: #ff9800;
+}
+
+.devops-scan-open-btn {
+  background: #fff;
+  color: #2e7d32;
+  border: 1px solid #2e7d32;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 10px;
+  cursor: pointer;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
+.devops-scan-open-btn:hover {
+  background: #2e7d32;
+  color: #fff;
+}
+
+/* On-page floating indicator (bottom-right of LinkedIn) */
+#devops-scan-indicator {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 2147483647;
+  background: #ffffff;
+  border: 1px solid #e0e0e0;
+  border-radius: 10px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+  padding: 10px 14px 10px 12px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 12px;
+  color: #1d1d1f;
+  min-width: 150px;
+  user-select: none;
+}
+
+.devops-scan-indicator__title {
+  font-weight: 700;
+  font-size: 12px;
+  color: #1565c0;
+  margin-bottom: 6px;
+  letter-spacing: 0.2px;
+}
+
+.devops-scan-indicator__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  padding: 2px 0;
+}
+
+.devops-scan-indicator__label {
+  color: #555;
+  font-size: 11px;
+}
+
+.devops-scan-indicator__val {
+  font-weight: 700;
+  font-size: 14px;
+  color: #1d1d1f;
+  font-variant-numeric: tabular-nums;
+}
+
+.devops-scan-indicator__val--match {
+  color: #2e7d32;
+}
+
+.devops-scan-indicator__last {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid #f0f0f0;
+  font-size: 10.5px;
+  color: #777;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.devops-scan-indicator__hide {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  background: transparent;
+  border: none;
+  color: #999;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+
+.devops-scan-indicator__hide:hover {
+  color: #333;
+}
+
+/* Keyword highlighting */
+mark.devops-scan-highlight {
+  background: #fff59d !important; /* Yellow highlight */
+  color: #000 !important;
+  font-weight: 600;
+  padding: 1px 2px;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(255, 235, 59, 0.3);
+}
