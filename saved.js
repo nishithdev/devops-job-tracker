@@ -53,12 +53,17 @@ function loadMatches() {
 function updateStats() {
   const total = allMatches.length;
   const hiring = allMatches.filter(m => m.isHiring).length;
-  const devops = total - hiring;
   const duplicates = allMatches.filter(m => m.duplicateOf).length;
+  
+  // Calculate fresh posts (≤7 days old based on post timestamp)
+  const sevenDaysAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
+  const fresh = allMatches.filter(m => {
+    return m.postTimestamp && m.postTimestamp >= sevenDaysAgo;
+  }).length;
   
   document.getElementById('stat-total').textContent = total;
   document.getElementById('stat-hiring').textContent = hiring;
-  document.getElementById('stat-devops').textContent = devops;
+  document.getElementById('stat-fresh').textContent = fresh;
   document.getElementById('stat-duplicates').textContent = duplicates;
   document.getElementById('total-count').textContent = 
     `${total} ${total === 1 ? 'match' : 'matches'} saved`;
@@ -69,11 +74,26 @@ function applyFilters() {
   const typeFilter = document.getElementById('filter-type').value;
   const skillFilter = document.getElementById('filter-skill').value;
   const duplicateFilter = document.getElementById('filter-duplicate') ? document.getElementById('filter-duplicate').value : 'all';
+  const recencyFilter = document.getElementById('filter-recency') ? document.getElementById('filter-recency').value : 'all';
   const sortBy = document.getElementById('sort-by').value;
   const pageSizeSelect = document.getElementById('page-size').value;
   
   // Update page size
   pageSize = pageSizeSelect === 'all' ? Infinity : parseInt(pageSizeSelect);
+  
+  // Calculate recency cutoff timestamp
+  let recencyCutoff = null;
+  if (recencyFilter !== 'all') {
+    const now = Date.now();
+    const timeMap = {
+      '24h': 24 * 60 * 60 * 1000,
+      '3d': 3 * 24 * 60 * 60 * 1000,
+      '7d': 7 * 24 * 60 * 60 * 1000,
+      '14d': 14 * 24 * 60 * 60 * 1000,
+      '30d': 30 * 24 * 60 * 60 * 1000
+    };
+    recencyCutoff = now - (timeMap[recencyFilter] || 0);
+  }
   
   // Single-pass filter combining all conditions for better performance
   filteredMatches = allMatches.filter(match => {
@@ -84,6 +104,11 @@ function applyFilters() {
     // Filter by duplicate status
     if (duplicateFilter === 'duplicates-only' && !match.duplicateOf) return false;
     if (duplicateFilter === 'originals-only' && match.duplicateOf) return false;
+    
+    // Filter by recency (post age, not when we saved it)
+    if (recencyCutoff && match.postTimestamp) {
+      if (match.postTimestamp < recencyCutoff) return false;
+    }
     
     // Filter by skill
     if (skillFilter !== 'all') {
@@ -228,6 +253,44 @@ function renderMatches() {
       hour: '2-digit',
       minute: '2-digit'
     });
+    
+    // Post age indicator (when the post was originally created on LinkedIn)
+    let postAgeDisplay = '';
+    if (match.postTimestamp) {
+      const postDate = new Date(match.postTimestamp);
+      const now = Date.now();
+      const ageMs = now - match.postTimestamp;
+      const ageDays = Math.floor(ageMs / (24 * 60 * 60 * 1000));
+      const ageHours = Math.floor(ageMs / (60 * 60 * 1000));
+      
+      let ageText = '';
+      let ageColor = '#4caf50'; // Green for fresh
+      
+      if (ageHours < 24) {
+        ageText = `${ageHours}h old`;
+        ageColor = '#4caf50'; // Green - very fresh
+      } else if (ageDays < 3) {
+        ageText = `${ageDays}d old`;
+        ageColor = '#8bc34a'; // Light green - fresh
+      } else if (ageDays < 7) {
+        ageText = `${ageDays}d old`;
+        ageColor = '#ffc107'; // Yellow - moderate
+      } else if (ageDays < 14) {
+        ageText = `${ageDays}d old`;
+        ageColor = '#ff9800'; // Orange - aging
+      } else {
+        ageText = `${ageDays}d old`;
+        ageColor = '#f44336'; // Red - old
+      }
+      
+      const postDateStr = postDate.toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric'
+      });
+      
+      postAgeDisplay = `<div style="margin-top:4px;"><span style="background:${ageColor};color:white;padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600;" title="Posted on ${postDateStr} (LinkedIn: ${escapeHtml(match.postAgeText || 'unknown')})">${ageText}</span></div>`;
+    }
     
     // Keywords badge - handle both old (single keyword) and new (multiple keywords) formats
     let keywordBadge = '';
@@ -377,7 +440,7 @@ function renderMatches() {
     return `
       <tr data-id="${match.id}"${selectedClass}>
         <td class="col-select"><input type="checkbox" class="row-checkbox" data-match-id="${match.id}" ${isSelected ? 'checked' : ''}></td>
-        <td class="col-timestamp">${dateStr}</td>
+        <td class="col-timestamp">${dateStr}${postAgeDisplay}</td>
         <td class="col-keywords">${keywordBadge}</td>
         <td class="col-status">
           <select class="status-dropdown" data-match-id="${match.id}">
@@ -864,7 +927,7 @@ document.getElementById('btn-last-page').addEventListener('click', () => {
 });
 
 let filterTimeout;
-['filter-input', 'filter-type', 'filter-skill', 'filter-duplicate', 'sort-by', 'page-size'].forEach(id => {
+['filter-input', 'filter-type', 'filter-skill', 'filter-duplicate', 'filter-recency', 'sort-by', 'page-size'].forEach(id => {
   const element = document.getElementById(id);
   if (element) {
     element.addEventListener('input', () => {
