@@ -674,9 +674,13 @@ try {
         // Create text snippet (first 200 chars)
         const snippet = text.substring(0, 200) + (text.length > 200 ? '...' : '');
         
+        // Get the current page URL (feed, group, search page)
+        const sourceUrl = window.location.href;
+        
         const match = {
           id: `match:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
           url: url || null,
+          sourceUrl: sourceUrl, // Page URL where this post was found
           timestamp: Date.now(),
           author: author,
           snippet: snippet,
@@ -689,7 +693,8 @@ try {
           emails: uniqueEmails,
           skills: info.skills || [], // Matched skills
           status: 'new', // Default status for new matches
-          duplicateOf: null // Will be set if this is a duplicate
+          duplicateOf: null, // Will be set if this is a duplicate
+          hiringSignals: info.hiringHits || [] // ALL matched hiring signals (array)
         };
         
         // Log extracted emails for debugging
