@@ -553,6 +553,11 @@ try {
     // Check for duplicates and add duplicate badge if found
     checkDuplicateAndDecorate(postEl, bar, url, text);
 
+    // "Applied" toggle — only for real hiring posts (invalid posts are not saved)
+    if (!info.invalidHit) {
+      addApplyButton(bar, url, text);
+    }
+
     if (url) {
       const btn = document.createElement("button");
       btn.className = BTN_CLASS;
@@ -580,6 +585,109 @@ try {
     saveMatch(postEl, url, info, text);
   }
   
+  // ---- Applied button -------------------------------------------------------
+
+  // Find a saved match by URL, falling back to snippet prefix when URL is absent.
+  function findSavedMatch(matches, url, snippetPrefix) {
+    if (url) return matches.find(m => m.url === url) || null;
+    if (snippetPrefix) {
+      return matches.find(m => m.snippet && m.snippet.startsWith(snippetPrefix)) || null;
+    }
+    return null;
+  }
+
+  // Write a new status back to the saved match; retries up to 3× if the
+  // match hasn't been persisted by saveMatch() yet (async race window).
+  function persistAppliedStatus(url, snippetPrefix, newStatus, attempt = 0) {
+    try {
+      if (!chrome.storage || !chrome.storage.local) return;
+      chrome.storage.local.get(['devopsSavedMatches'], (result) => {
+        if (chrome.runtime.lastError) return;
+        const matches = result.devopsSavedMatches || [];
+        const match = findSavedMatch(matches, url, snippetPrefix);
+        if (match) {
+          match.status = newStatus;
+          chrome.storage.local.set({ devopsSavedMatches: matches });
+          dbg('apply status set:', newStatus, url || snippetPrefix);
+        } else if (attempt < 4) {
+          // saveMatch() hasn't finished yet — retry
+          setTimeout(() => persistAppliedStatus(url, snippetPrefix, newStatus, attempt + 1), 600);
+        }
+      });
+    } catch (e) {
+      dbg('persistAppliedStatus error:', e.message);
+    }
+  }
+
+  function addApplyButton(bar, url, text) {
+    const snippetPrefix = text ? text.substring(0, 120) : '';
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "devops-scan-apply-btn";
+
+    const setUnapplied = () => {
+      btn.textContent = "📧 Applied?";
+      btn.style.cssText = `
+        padding: 5px 10px;
+        background: #1565c0;
+        color: #fff;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 12px;
+        font-weight: 600;
+        margin-left: 6px;
+        transition: background 0.15s;
+      `;
+      btn.title = "Mark this post as Applied";
+      btn.dataset.applied = "false";
+    };
+
+    const setApplied = () => {
+      btn.textContent = "✅ Applied";
+      btn.style.cssText = `
+        padding: 5px 10px;
+        background: #2e7d32;
+        color: #fff;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 12px;
+        font-weight: 600;
+        margin-left: 6px;
+        transition: background 0.15s;
+      `;
+      btn.title = "Click to undo Applied";
+      btn.dataset.applied = "true";
+    };
+
+    setUnapplied();
+
+    // Sync initial state from storage (match may already be marked applied)
+    try {
+      if (chrome.storage && chrome.storage.local) {
+        chrome.storage.local.get(['devopsSavedMatches'], (result) => {
+          if (chrome.runtime.lastError) return;
+          const match = findSavedMatch(result.devopsSavedMatches || [], url, snippetPrefix);
+          if (match && match.status === 'applied') setApplied();
+        });
+      }
+    } catch (e) { /* context invalidated */ }
+
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const isApplied = btn.dataset.applied === "true";
+      const newStatus = isApplied ? 'new' : 'applied';
+      // Optimistic UI update — feels instant
+      if (newStatus === 'applied') setApplied(); else setUnapplied();
+      persistAppliedStatus(url, snippetPrefix, newStatus);
+    });
+
+    bar.appendChild(btn);
+  }
+
   function checkDuplicateAndDecorate(postEl, bar, url, text) {
     // Check if this post is a duplicate of an already saved post
     try {
