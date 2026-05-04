@@ -51,11 +51,9 @@ try {
   // DevOps keywords show a blue DevOps badge.
   
   // Active keywords (loaded from storage or defaults from shared/keywordConfig.js)
-  let DEVOPS_KEYWORDS = [...DEFAULT_DEVOPS_KEYWORDS];
-  let HIRING_SIGNALS = [...DEFAULT_HIRING_SIGNALS];
-  let EXCLUDE_KEYWORDS = [...DEFAULT_EXCLUDE_KEYWORDS];
-  let INVALID_KEYWORDS = [...DEFAULT_INVALID_KEYWORDS];
-  let SKILLS = [...DEFAULT_SKILLS];
+  let DEVOPS_KEYWORDS  = [...DEFAULT_DEVOPS_KEYWORDS];
+  let HIRING_SIGNALS   = [...DEFAULT_HIRING_SIGNALS];
+  let INVALID_KEYWORDS = [...DEFAULT_INVALID_KEYWORDS]; // single list — shown as "Not valid"
   
   // Regex cache to avoid recompiling patterns on every scan
   const regexCache = new Map();
@@ -73,25 +71,28 @@ try {
     regexCache.clear();
   }
   
-  // Load custom keywords from storage
+  // Load custom keywords from storage (filters out disabled keywords)
   function loadCustomKeywords() {
     chrome.storage.local.get(['customKeywords'], (result) => {
       if (result.customKeywords) {
-        DEVOPS_KEYWORDS = result.customKeywords.devopsKeywords || DEFAULT_DEVOPS_KEYWORDS;
-        HIRING_SIGNALS = result.customKeywords.hiringSignals || DEFAULT_HIRING_SIGNALS;
-        EXCLUDE_KEYWORDS = result.customKeywords.excludeKeywords || DEFAULT_EXCLUDE_KEYWORDS;
-        INVALID_KEYWORDS = result.customKeywords.invalidKeywords || DEFAULT_INVALID_KEYWORDS;
-        SKILLS = result.customKeywords.skills || DEFAULT_SKILLS;
-        
+        const ck = result.customKeywords;
+        // Get disabled sets for each category (arrays stored under ck.disabled)
+        const disabled = ck.disabled || {};
+        const disabledDevops   = new Set(disabled.devopsKeywords  || []);
+        const disabledHiring   = new Set(disabled.hiringSignals   || []);
+        const disabledInvalid  = new Set(disabled.invalidKeywords || []);
+
+        DEVOPS_KEYWORDS  = (ck.devopsKeywords  || DEFAULT_DEVOPS_KEYWORDS) .filter(k => !disabledDevops.has(k));
+        HIRING_SIGNALS   = (ck.hiringSignals   || DEFAULT_HIRING_SIGNALS)  .filter(k => !disabledHiring.has(k));
+        INVALID_KEYWORDS = (ck.invalidKeywords || DEFAULT_INVALID_KEYWORDS).filter(k => !disabledInvalid.has(k));
+
         // Clear regex cache when keywords change
         clearRegexCache();
-        
+
         dbg("Custom keywords loaded from settings");
-        dbg("DevOps keywords:", DEVOPS_KEYWORDS.length);
-        dbg("Hiring signals:", HIRING_SIGNALS.length);
-        dbg("Exclude keywords:", EXCLUDE_KEYWORDS.length);
-        dbg("Invalid keywords:", INVALID_KEYWORDS.length);
-        dbg("Skills:", SKILLS.length);
+        dbg("DevOps keywords:", DEVOPS_KEYWORDS.length,  "(disabled:", disabledDevops.size  + ")");
+        dbg("Hiring signals:", HIRING_SIGNALS.length,    "(disabled:", disabledHiring.size   + ")");
+        dbg("Invalid keywords:", INVALID_KEYWORDS.length, "(disabled:", disabledInvalid.size + ")");
       } else {
         dbg("Using default keywords (no custom settings found)");
       }
@@ -233,16 +234,6 @@ try {
       return { match: false };
     }
     
-    // First check for excluded keywords - filter out training/courses/bootcamps
-    const excludeHit = findAny(t, EXCLUDE_KEYWORDS);
-    if (excludeHit) {
-      if (DEBUG) {
-        dbg("SKIP: excluded keyword found:", excludeHit);
-        dbg("Full text:", text);
-      }
-      return { match: false };
-    }
-    
     // Find ALL matching DevOps keywords (not just the first one)
     const devopsHits = findAll(t, DEVOPS_KEYWORDS);
     if (devopsHits.length === 0) {
@@ -272,15 +263,6 @@ try {
     // Check for invalid keywords (USC only, no sponsorship, etc.)
     const invalidHit = findAny(t, INVALID_KEYWORDS);
     
-    // Extract matched skills
-    const matchedSkills = SKILLS.filter(skill => {
-      if (skill.length <= 3 && /^[a-z0-9]+$/.test(skill)) {
-        const regex = getCachedRegex(skill, 'i');
-        return regex.test(t);
-      }
-      return t.includes(skill);
-    });
-    
     // Only match posts with both DevOps keywords AND hiring signals
     if (DEBUG) {
       // Create highlighted version of text for debugging
@@ -308,12 +290,91 @@ try {
       dbg("DevOps keywords:", devopsHits.join(', '));
       dbg("Hiring signals:", hiringHits.join(', '));
       dbg("Invalid keyword:", invalidHit || "none");
-      dbg("Skills:", matchedSkills.join(', ') || "none");
+      dbg("Skills:", devopsHits.join(', ') || "none");
       dbg("--- FULL POST TEXT (with highlights) ---");
       dbg(highlightedText);
       dbg("--- END POST TEXT ---");
     }
-    return { match: true, devopsHits, hiringHit, hiringHits, invalidHit, skills: matchedSkills };
+    return { match: true, devopsHits, hiringHit, hiringHits, invalidHit, skills: devopsHits };
+  }
+
+  // ---- Relevance scoring --------------------------------------------------
+  // Scores a match 0-∞ so saved.js can sort best leads to the top.
+  // Weights:
+  //   +2 per unique DevOps keyword hit
+  //   +1 per hiring signal (capped at 5)
+  //   +1 per matched skill (capped at 8)
+  //   +5 if at least one email was extracted
+  //   +3 if "remote" / "wfh" / "work from home" appears
+  //   +3 per C2C/contract term (capped at 9)
+  function computeRelevanceScore(devopsHits, hiringHits, skills, text, emails) {
+    let score = 0;
+    const t = lower(text);
+
+    // DevOps keyword hits (+2 each, no cap — more specific = stronger signal)
+    score += (devopsHits || []).length * 2;
+
+    // Hiring signals (+1 each, cap 5)
+    score += Math.min((hiringHits || []).length, 5);
+
+    // Skills (+1 each, cap 8)
+    score += Math.min((skills || []).length, 8);
+
+    // Email present (+5 — high-value for cold outreach)
+    if (emails && emails.length > 0) score += 5;
+
+    // Remote work signals (+3)
+    if (/\b(remote|wfh|work from home|fully remote|100% remote)\b/.test(t)) score += 3;
+
+    // C2C / contract terms (+3 each, cap 9)
+    const contractTerms = [
+      'c2c', 'corp to corp', 'corp-to-corp', 'contract', '1099', 'w2', 'w-2',
+      'contract to hire', 'c2h', 'contract-to-hire', 'contract only', 'contract role'
+    ];
+    let contractMatches = 0;
+    for (const term of contractTerms) {
+      if (t.includes(term)) {
+        contractMatches++;
+        if (contractMatches * 3 >= 9) break;
+      }
+    }
+    score += Math.min(contractMatches * 3, 9);
+
+    return score;
+  }
+
+  // ---- Keyword hit tracking -----------------------------------------------
+  // Counts how many times each keyword has been seen in confirmed matches.
+  // Buffer is flushed to storage every 30s to avoid hammering the storage API.
+  let keywordHitBuffer = {};
+
+  function trackKeywordHits(devopsHits, hiringHits, skills) {
+    const bump = (k) => {
+      if (!k) return;
+      keywordHitBuffer[k] = (keywordHitBuffer[k] || 0) + 1;
+    };
+    (devopsHits || []).forEach(bump);
+    (hiringHits || []).forEach(bump);
+    (skills || []).forEach(bump);
+  }
+
+  function flushKeywordHits() {
+    if (Object.keys(keywordHitBuffer).length === 0) return;
+    const pending = keywordHitBuffer;
+    keywordHitBuffer = {};
+    try {
+      if (!chrome.storage || !chrome.storage.local) return;
+      chrome.storage.local.get(['keywordHitCounts'], (result) => {
+        if (chrome.runtime.lastError) return;
+        const counts = result.keywordHitCounts || {};
+        for (const [k, v] of Object.entries(pending)) {
+          counts[k] = (counts[k] || 0) + v;
+        }
+        chrome.storage.local.set({ keywordHitCounts: counts });
+      });
+    } catch (e) {
+      dbg('flushKeywordHits error:', e.message);
+    }
   }
 
   function getPostText(postEl) {
@@ -361,10 +422,17 @@ try {
     return a ? a.href : null;
   }
 
+  // Highlight styles per category — background only, no font changes
+  const HIGHLIGHT_STYLES = {
+    devops:   { cls: 'devops-scan-highlight--devops',   css: 'background:#fff59d;border-radius:2px;' },
+    hiring:   { cls: 'devops-scan-highlight--hiring',   css: 'background:#c8e6c9;border-radius:2px;' },
+    skill:    { cls: 'devops-scan-highlight--skill',    css: 'background:#e3f2fd;border-radius:2px;' },
+    invalid:  { cls: 'devops-scan-highlight--invalid',  css: 'background:#ffcdd2;border-radius:2px;' },
+  };
+
   function highlightKeywords(postEl, info) {
-    // Highlight matched keywords in the post body text
     const bodySelectors = [
-      "[data-testid='expandable-text-box']", // New feed layout (2024+)
+      "[data-testid='expandable-text-box']",
       ".feed-shared-update-v2__description",
       ".update-components-text",
       ".feed-shared-text",
@@ -372,86 +440,70 @@ try {
       ".update-components-update-v2__commentary",
       "[data-test-id='main-feed-activity-card__commentary']",
     ];
-    
-    // Highlight ALL matched DevOps keywords (not hiring signals)
-    const keywordsToHighlight = info.devopsHits || [];
-    
+
     bodySelectors.forEach((sel) => {
       postEl.querySelectorAll(sel).forEach((container) => {
-        // Skip if already highlighted
         if (container.hasAttribute('data-devops-highlighted')) return;
         container.setAttribute('data-devops-highlighted', 'true');
-        
-        // Walk through text nodes and highlight keywords
-        highlightInElement(container, keywordsToHighlight);
+
+        // DevOps keywords — yellow
+        if (info.devopsHits && info.devopsHits.length > 0)
+          highlightInElement(container, info.devopsHits, HIGHLIGHT_STYLES.devops);
+        // Invalid keyword — red (runs last so it overwrites any yellow on a conflicting word)
+        if (info.invalidHit)
+          highlightInElement(container, [info.invalidHit], HIGHLIGHT_STYLES.invalid);
       });
     });
   }
-  
-  function highlightInElement(element, keywords) {
-    // Create cache key from keywords array
-    const cacheKey = `highlight:${[...keywords].sort().join('|')}`;
-    
-    // Get or create cached regex pattern
+
+  // highlightInElement — walks text nodes inside `element` and wraps each
+  // occurrence of any keyword in `keywords` with a <mark> styled per `style`.
+  // Safe to call multiple times on the same element with different keyword sets:
+  // each pass only touches bare text nodes, skipping nodes already inside <mark>.
+  function highlightInElement(element, keywords, style) {
+    if (!keywords || keywords.length === 0) return;
+
+    const cacheKey = `hl:${style.cls}:${[...keywords].sort().join('|')}`;
+
     let pattern, regex;
     if (regexCache.has(cacheKey)) {
-      const cached = regexCache.get(cacheKey);
-      pattern = cached.pattern;
-      regex = cached.regex;
+      ({ pattern, regex } = regexCache.get(cacheKey));
     } else {
       pattern = keywords
-        .map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) // Escape regex chars
+        .map(k => k
+          .replace(/[.*+?^${}()|[\]\\]/g, '\\$&') // escape regex special chars
+          .replace(/ +/g, '[\\s\\u00a0]+')          // match any whitespace (incl. LinkedIn's &nbsp;)
+        )
         .join('|');
       regex = new RegExp(`\\b(${pattern})\\b`, 'gi');
       regexCache.set(cacheKey, { pattern, regex });
     }
-    
-    // Process all text nodes
-    const walker = document.createTreeWalker(
-      element,
-      NodeFilter.SHOW_TEXT,
-      null,
-      false
-    );
-    
+
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null, false);
     const nodesToReplace = [];
     let node;
     while (node = walker.nextNode()) {
-      // Skip if parent is already a mark element
-      if (node.parentElement.tagName === 'MARK') continue;
-      
-      const text = node.textContent;
-      // Reset regex before testing
+      if (node.parentElement.tagName === 'MARK') continue; // already highlighted
       regex.lastIndex = 0;
-      if (regex.test(text)) {
-        nodesToReplace.push(node);
-      }
+      if (regex.test(node.textContent)) nodesToReplace.push(node);
     }
-    
-    // Replace text nodes with highlighted versions
+
     nodesToReplace.forEach(textNode => {
       const text = textNode.textContent;
       const fragment = document.createDocumentFragment();
       let lastIndex = 0;
-      
-      // Create new regex instance for replacement (avoid lastIndex issues)
       const highlightRegex = new RegExp(`\\b(${pattern})\\b`, 'gi');
       let match;
-      
+
       while (match = highlightRegex.exec(text)) {
-        // Add text before match
         if (match.index > lastIndex) {
-          fragment.appendChild(
-            document.createTextNode(text.substring(lastIndex, match.index))
-          );
+          fragment.appendChild(document.createTextNode(text.substring(lastIndex, match.index)));
         }
-        
-        // Add highlighted match with yellow highlighting
         const mark = document.createElement('mark');
-        mark.className = 'devops-scan-highlight';
+        mark.className = style.cls;
+        mark.style.cssText = style.css;
         mark.textContent = match[0];
         fragment.appendChild(mark);
-        
         lastIndex = match.index + match[0].length;
       }
       
@@ -800,6 +852,10 @@ try {
         // Get the current page URL (feed, group, search page)
         const sourceUrl = window.location.href;
         
+        const relevanceScore = computeRelevanceScore(
+          info.devopsHits, info.hiringHits, info.skills, text, uniqueEmails
+        );
+
         const match = {
           id: `match:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
           url: url || null,
@@ -817,7 +873,8 @@ try {
           skills: info.skills || [], // Matched skills
           status: 'new', // Default status for new matches
           duplicateOf: null, // Will be set if this is a duplicate
-          hiringSignals: info.hiringHits || [] // ALL matched hiring signals (array)
+          hiringSignals: info.hiringHits || [], // ALL matched hiring signals (array)
+          relevanceScore: relevanceScore // Computed lead quality score
         };
         
         // Log extracted emails for debugging
@@ -1527,6 +1584,7 @@ try {
       bumpAnalyzed(postEl);
       if (info.match) {
         dbg("match:", info.devopsHits.join(', '), info.hiringHit ? `+ ${info.hiringHit}` : "");
+        trackKeywordHits(info.devopsHits, info.hiringHits, info.skills);
         decorate(postEl, info, text);
       } else {
         markScanned(postEl, text.length);
@@ -1560,6 +1618,9 @@ try {
 
     // Periodic safety scan in case mutations are missed.
     setInterval(scanOnce, 2000);
+
+    // Flush keyword hit counts to storage every 30 seconds
+    setInterval(flushKeywordHits, 30000);
 
     // Initial UI setup
     ensureIndicator();

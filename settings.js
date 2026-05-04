@@ -4,17 +4,35 @@ const DEFAULT_SETTINGS = {
   devopsKeywords: DEFAULT_DEVOPS_KEYWORDS,
   hiringSignals: DEFAULT_HIRING_SIGNALS,
   invalidKeywords: DEFAULT_INVALID_KEYWORDS,
-  skills: DEFAULT_SKILLS
 };
 
 let currentSettings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
 
+// Hit counts loaded from storage (keyword → number of times seen in confirmed matches)
+let currentHitCounts = {};
+
+// Disabled keyword sets per category (toggled on/off by the user)
+let currentDisabled = {
+  devopsKeywords: [],
+  hiringSignals: [],
+  invalidKeywords: [],
+};
+
 // Load settings from storage
 function loadSettings() {
-  safeStorageGet(['customKeywords']).then((result) => {
+  safeStorageGet(['customKeywords', 'keywordHitCounts']).then((result) => {
     if (result.customKeywords) {
       currentSettings = result.customKeywords;
+      // Restore disabled state saved alongside keywords
+      if (result.customKeywords.disabled) {
+        currentDisabled = Object.assign({
+          devopsKeywords: [],
+          hiringSignals: [],
+          invalidKeywords: [],
+        }, result.customKeywords.disabled);
+      }
     }
+    currentHitCounts = result.keywordHitCounts || {};
     renderAllKeywords();
   }).catch((error) => {
     console.error('Failed to load settings:', error);
@@ -24,7 +42,8 @@ function loadSettings() {
 
 // Save settings to storage
 function saveSettings() {
-  safeStorageSet({ customKeywords: currentSettings }).then(() => {
+  const payload = Object.assign({}, currentSettings, { disabled: currentDisabled });
+  safeStorageSet({ customKeywords: payload }).then(() => {
     showSuccessMessage('Settings saved successfully!');
     // Notify content script to reload keywords
     chrome.runtime.sendMessage({ action: 'reloadKeywords' });
@@ -38,6 +57,8 @@ function saveSettings() {
 function resetToDefaults() {
   if (confirm('Are you sure you want to reset all keywords to defaults? This cannot be undone.')) {
     currentSettings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+    // Also clear all disabled toggles when resetting to defaults
+    currentDisabled = { devopsKeywords: [], hiringSignals: [], invalidKeywords: [] };
     saveSettings();
     renderAllKeywords();
   }
@@ -48,27 +69,52 @@ function renderAllKeywords() {
   renderKeywords('devopsKeywords', 'devops-keywords', 'devops');
   renderKeywords('hiringSignals', 'hiring-signals', 'hiring');
   renderKeywords('invalidKeywords', 'invalid-keywords', 'exclude');
-  renderKeywords('skills', 'skills-keywords', 'skill');
   updateCounts();
 }
 
-// Render keywords for a specific group
+// Render keywords for a specific group (with hit count badge + enable/disable toggle)
 function renderKeywords(settingKey, containerId, type) {
   const container = document.getElementById(containerId);
   const keywords = currentSettings[settingKey] || [];
-  
+  const disabledSet = new Set(currentDisabled[settingKey] || []);
+
   if (keywords.length === 0) {
     container.innerHTML = '<div class="empty-state">No keywords added yet</div>';
     return;
   }
-  
+
   container.innerHTML = keywords
-    .map((keyword, index) => `
-      <div class="keyword-tag ${type}">
-        ${escapeHtml(keyword)}
-        <button onclick="removeKeyword('${settingKey}', ${index})" title="Remove">×</button>
-      </div>
-    `)
+    .map((keyword, index) => {
+      const isDisabled = disabledSet.has(keyword);
+      const hits = currentHitCounts[keyword] || 0;
+      const hitBadge = hits > 0
+        ? `<span class="keyword-hit-count" title="${hits} match${hits === 1 ? '' : 'es'} seen" style="
+            background:rgba(0,0,0,0.18);
+            color:inherit;
+            border-radius:10px;
+            padding:1px 6px;
+            font-size:10px;
+            font-weight:700;
+            margin-left:4px;
+            min-width:18px;
+            text-align:center;
+            display:inline-block;
+          ">${hits}</span>`
+        : '';
+      const toggleTitle = isDisabled ? 'Enable this keyword' : 'Disable this keyword';
+      const toggleIcon  = isDisabled ? '○' : '●';
+      return `
+        <div class="keyword-tag ${type}${isDisabled ? ' keyword-tag--disabled' : ''}" style="${isDisabled ? 'opacity:0.45;text-decoration:line-through;' : ''}">
+          ${escapeHtml(keyword)}${hitBadge}
+          <button
+            onclick="toggleKeyword('${settingKey}', '${keyword.replace(/'/g, "\\'")}')"
+            title="${toggleTitle}"
+            style="margin-left:4px;background:none;border:none;cursor:pointer;font-size:13px;line-height:1;padding:0 2px;color:inherit;opacity:0.75;"
+          >${toggleIcon}</button>
+          <button onclick="removeKeyword('${settingKey}', ${index})" title="Remove" style="margin-left:2px;">×</button>
+        </div>
+      `;
+    })
     .join('');
 }
 
@@ -103,13 +149,25 @@ window.removeKeyword = function(settingKey, index) {
   updateCounts();
 };
 
+// Toggle a keyword enabled/disabled (does not remove it, just excludes it from scanning)
+window.toggleKeyword = function(settingKey, keyword) {
+  const disabledList = currentDisabled[settingKey] || [];
+  const idx = disabledList.indexOf(keyword);
+  if (idx === -1) {
+    disabledList.push(keyword);
+  } else {
+    disabledList.splice(idx, 1);
+  }
+  currentDisabled[settingKey] = disabledList;
+  renderKeywords(settingKey, getContainerIdFromSetting(settingKey), getTypeFromSetting(settingKey));
+};
+
 // Helper functions
 function getContainerIdFromSetting(settingKey) {
   const map = {
     'devopsKeywords': 'devops-keywords',
-    'hiringSignals': 'hiring-signals',
-    'invalidKeywords': 'invalid-keywords',
-    'skills': 'skills-keywords'
+    'hiringSignals':  'hiring-signals',
+    'invalidKeywords':'invalid-keywords',
   };
   return map[settingKey];
 }
@@ -117,22 +175,19 @@ function getContainerIdFromSetting(settingKey) {
 function getTypeFromSetting(settingKey) {
   const map = {
     'devopsKeywords': 'devops',
-    'hiringSignals': 'hiring',
-    'invalidKeywords': 'exclude',
-    'skills': 'skill'
+    'hiringSignals':  'hiring',
+    'invalidKeywords':'exclude',
   };
   return map[settingKey];
 }
 
 function updateCounts() {
-  document.getElementById('devops-count').textContent = 
+  document.getElementById('devops-count').textContent =
     `${currentSettings.devopsKeywords.length} keywords`;
-  document.getElementById('hiring-count').textContent = 
+  document.getElementById('hiring-count').textContent =
     `${currentSettings.hiringSignals.length} signals`;
-  document.getElementById('invalid-count').textContent = 
+  document.getElementById('invalid-count').textContent =
     `${currentSettings.invalidKeywords.length} keywords`;
-  document.getElementById('skills-count').textContent = 
-    `${currentSettings.skills.length} skills`;
 }
 
 function showSuccessMessage(message) {
@@ -148,14 +203,12 @@ document.getElementById('btn-save').addEventListener('click', saveSettings);
 document.getElementById('btn-reset').addEventListener('click', resetToDefaults);
 document.getElementById('btn-reset-confirm').addEventListener('click', resetToDefaults);
 
-document.getElementById('btn-add-devops').addEventListener('click', () => 
+document.getElementById('btn-add-devops').addEventListener('click', () =>
   addKeyword('devopsKeywords', 'add-devops'));
-document.getElementById('btn-add-hiring').addEventListener('click', () => 
+document.getElementById('btn-add-hiring').addEventListener('click', () =>
   addKeyword('hiringSignals', 'add-hiring'));
-document.getElementById('btn-add-invalid').addEventListener('click', () => 
+document.getElementById('btn-add-invalid').addEventListener('click', () =>
   addKeyword('invalidKeywords', 'add-invalid'));
-document.getElementById('btn-add-skill').addEventListener('click', () => 
-  addKeyword('skills', 'add-skill'));
 
 // Enter key to add keywords
 document.getElementById('add-devops').addEventListener('keypress', (e) => {
@@ -166,9 +219,6 @@ document.getElementById('add-hiring').addEventListener('keypress', (e) => {
 });
 document.getElementById('add-invalid').addEventListener('keypress', (e) => {
   if (e.key === 'Enter') addKeyword('invalidKeywords', 'add-invalid');
-});
-document.getElementById('add-skill').addEventListener('keypress', (e) => {
-  if (e.key === 'Enter') addKeyword('skills', 'add-skill');
 });
 
 // Initialize

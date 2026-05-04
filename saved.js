@@ -7,7 +7,7 @@ let extensionContextValid = true;
 let selectedRows = new Set();
 let currentPage = 1;
 let pageSize = 50;
-let sortColumn = 'timestamp';
+let sortColumn = 'score';
 let sortDirection = 'desc';
 
 function showContextInvalidError() {
@@ -135,6 +135,10 @@ function applySorting(direction = null) {
     let aVal, bVal;
     
     switch(sortColumn) {
+      case 'score':
+        aVal = a.relevanceScore ?? 0;
+        bVal = b.relevanceScore ?? 0;
+        break;
       case 'timestamp':
         aVal = a.timestamp;
         bVal = b.timestamp;
@@ -149,8 +153,8 @@ function applySorting(direction = null) {
         bVal = (b.status || 'new').toLowerCase();
         break;
       default:
-        aVal = a.timestamp;
-        bVal = b.timestamp;
+        aVal = a.relevanceScore ?? 0;
+        bVal = b.relevanceScore ?? 0;
     }
     
     if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1;
@@ -371,12 +375,28 @@ function renderMatches() {
       ? `<a href="${escapeHtml(match.url)}" target="_blank" class="btn-open">Open ↗</a>`
       : '';
     
+    // Score badge — green ≥20, yellow 12-19, gray <12
+    const score = match.relevanceScore ?? null;
+    let scoreBadge = '<span style="color:#bbb;font-size:12px;">—</span>';
+    if (score !== null) {
+      let scoreBg, scoreColor;
+      if (score >= 20) {
+        scoreBg = '#e8f5e9'; scoreColor = '#2e7d32';
+      } else if (score >= 12) {
+        scoreBg = '#fffde7'; scoreColor = '#f57f17';
+      } else {
+        scoreBg = '#f5f5f5'; scoreColor = '#757575';
+      }
+      scoreBadge = `<span style="background:${scoreBg};color:${scoreColor};padding:4px 8px;border-radius:12px;font-size:12px;font-weight:700;white-space:nowrap;">${score}</span>`;
+    }
+
     const isSelected = selectedRows.has(match.id);
     const selectedClass = isSelected ? ' class="selected"' : '';
-    
+
     return `
       <tr data-id="${match.id}"${selectedClass}>
         <td class="col-select"><input type="checkbox" class="row-checkbox" data-match-id="${match.id}" ${isSelected ? 'checked' : ''}></td>
+        <td class="col-score" style="text-align:center;">${scoreBadge}</td>
         <td class="col-timestamp">${dateStr}</td>
         <td class="col-keywords">${keywordBadge}</td>
         <td class="col-status">
@@ -410,6 +430,7 @@ function renderMatches() {
       <thead>
         <tr>
           <th class="col-select"><input type="checkbox" id="select-all" ${allSelected ? 'checked' : ''}></th>
+          <th class="sortable${sortColumn === 'score' ? (sortDirection === 'asc' ? ' sorted-asc' : ' sorted-desc') : ''}" data-column="score" title="Relevance score: higher = better lead" style="text-align:center;">Score</th>
           <th class="sortable${sortColumn === 'timestamp' ? (sortDirection === 'asc' ? ' sorted-asc' : ' sorted-desc') : ''}" data-column="timestamp">Date</th>
           <th class="sortable${sortColumn === 'keyword' ? (sortDirection === 'asc' ? ' sorted-asc' : ' sorted-desc') : ''}" data-column="keyword">Keywords</th>
           <th class="sortable${sortColumn === 'status' ? (sortDirection === 'asc' ? ' sorted-asc' : ' sorted-desc') : ''}" data-column="status">Status</th>

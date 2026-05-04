@@ -121,7 +121,7 @@ function removeStorageObserver(listener) {
  */
 function getWithDefaults(defaults, callback) {
   const keys = Object.keys(defaults);
-  safeStorageGet(keys, (result) => {
+  safeStorageGet(keys).then((result) => {
     const merged = { ...defaults, ...result };
     callback(merged);
   });
