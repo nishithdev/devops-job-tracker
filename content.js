@@ -63,7 +63,8 @@ try {
   function getCachedRegex(keyword, flags = 'i') {
     const cacheKey = `${keyword}:${flags}`;
     if (!regexCache.has(cacheKey)) {
-      regexCache.set(cacheKey, new RegExp(`\\b${keyword}\\b`, flags));
+      const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      regexCache.set(cacheKey, new RegExp(`\\b${escaped}\\b`, flags));
     }
     return regexCache.get(cacheKey);
   }
@@ -179,36 +180,45 @@ try {
   }
 
   // ---- Helpers -------------------------------------------------------------
-  const lower = (s) => (s || "").toLowerCase();
+  // Normalize text: lowercase + collapse all whitespace variants (including
+  // non-breaking spaces   common in LinkedIn's DOM) to single spaces.
+  // This ensures phrases like "w2 only" match even when LinkedIn renders
+  // them with non-breaking spaces between words.
+  const lower = (s) => (s || "").toLowerCase().replace(/[\s ]+/g, ' ').trim();
 
   function findAny(haystack, needles) {
     return needles.find((n) => {
+      // Normalize needle to lowercase so it matches the lowercased haystack
+      // regardless of how the user typed the keyword (SRE, sre, Sre all work)
+      const needle = n.toLowerCase();
       // Use word boundary matching for short keywords (3 chars or less)
       // to avoid false positives:
       //   "sre" should NOT match "insure", "ensure", "disrespect"
       //   "aks" should NOT match "tasks", "breaks", "speaks"
       //   "eks" should NOT match "weeks", "seeks", "cheeks"
       //   "gke" should NOT match "gke" within other words
-      if (n.length <= 3 && /^[a-z0-9]+$/.test(n)) {
+      if (needle.length <= 3 && /^[a-z0-9]+$/.test(needle)) {
         // Use cached regex with word boundaries: \bsre\b
-        const regex = getCachedRegex(n, 'i');
+        const regex = getCachedRegex(needle, 'i');
         return regex.test(haystack);
       }
       // For longer keywords and phrases, use simple substring match
       // Note: EXCLUDE_KEYWORDS are intentionally specific phrases (e.g., "online course"
       // instead of just "course") to avoid false positives like "Concourse" (CI/CD tool)
-      return haystack.includes(n);
+      return haystack.includes(needle);
     });
   }
 
   function findAll(haystack, needles) {
     // Returns ALL matching keywords (not just the first one)
     return needles.filter((n) => {
-      if (n.length <= 3 && /^[a-z0-9]+$/.test(n)) {
-        const regex = getCachedRegex(n, 'i');
+      // Normalize needle to lowercase so uppercase custom keywords (SRE, AWS) match correctly
+      const needle = n.toLowerCase();
+      if (needle.length <= 3 && /^[a-z0-9]+$/.test(needle)) {
+        const regex = getCachedRegex(needle, 'i');
         return regex.test(haystack);
       }
-      return haystack.includes(n);
+      return haystack.includes(needle);
     });
   }
 
@@ -380,7 +390,7 @@ try {
   
   function highlightInElement(element, keywords) {
     // Create cache key from keywords array
-    const cacheKey = `highlight:${keywords.sort().join('|')}`;
+    const cacheKey = `highlight:${[...keywords].sort().join('|')}`;
     
     // Get or create cached regex pattern
     let pattern, regex;
@@ -842,7 +852,7 @@ try {
             dbg('storage.set error:', chrome.runtime.lastError.message);
             return;
           }
-          dbg('saved match:', match.id, info.devopsHit);
+          dbg('saved match:', match.id, info.devopsHits.join(', '));
         });
       });
     } catch (e) {
@@ -1526,9 +1536,11 @@ try {
   }
 
   // Re-scan as LinkedIn lazily injects more posts during scroll.
+  // 100ms debounce: fast enough to catch newly injected posts promptly,
+  // short enough to avoid firing on every micro-mutation LinkedIn makes.
   const obs = new MutationObserver(() => {
     clearTimeout(obs._t);
-    obs._t = setTimeout(scanOnce, 250);
+    obs._t = setTimeout(scanOnce, 100);
   });
 
   // Initialize extension (wait for body if needed)
@@ -1599,11 +1611,17 @@ try {
 
   // Detect LinkedIn SPA navigation (URL changes without page reload)
   let lastUrl = location.href;
+  let navigationScanTimers = []; // Track all pending scan timers so we can cancel on re-navigation
+
   function detectNavigation() {
     if (location.href !== lastUrl) {
       dbg("LinkedIn navigation detected:", lastUrl, "→", location.href);
       lastUrl = location.href;
-      
+
+      // Cancel any pending scan timers from a previous navigation
+      navigationScanTimers.forEach(t => clearTimeout(t));
+      navigationScanTimers = [];
+
       // Stop auto-scroll when navigating to new page
       if (autoScrollEnabled) {
         autoScrollEnabled = false;
@@ -1613,22 +1631,37 @@ try {
         }
         dbg("Auto-scroll: DISABLED due to navigation");
       }
-      
+
       // Clear seen posts to re-scan new page
       seenPosts.clear();
       seenMatches.clear();
-      
+
       // Reset duplicate counter on navigation
       duplicatesFoundInSession = 0;
       dbg("Navigation: Reset duplicate counter to 0");
-      
-      // Re-add auto-scroll button after navigation
-      setTimeout(() => {
-        addAutoScrollButton();
-      }, 1000);
-      
-      // Trigger immediate scan of new page
-      setTimeout(scanOnce, 500);
+
+      // Re-attach indicator and button immediately — no delay needed since
+      // these are fixed-position elements appended directly to body and
+      // survive LinkedIn's SPA routing. ensureIndicator() re-creates them
+      // if LinkedIn happened to remove them.
+      ensureIndicator();
+      addAutoScrollButton();
+      updateIndicator();
+
+      // LinkedIn SPA navigation renders content progressively:
+      // - ~300ms: skeleton/loading placeholder appears
+      // - ~800ms: first posts may appear
+      // - ~1500ms: full feed rendered
+      // - ~3000ms: lazy-loaded content and groups fully settled
+      // Schedule multiple progressive scans to catch content at each stage.
+      const delays = [300, 800, 1500, 3000];
+      delays.forEach(delay => {
+        const t = setTimeout(() => {
+          dbg(`Post-navigation scan at ${delay}ms`);
+          scanOnce();
+        }, delay);
+        navigationScanTimers.push(t);
+      });
     }
   }
 

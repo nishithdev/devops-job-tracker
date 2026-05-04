@@ -106,7 +106,9 @@ const DEFAULT_INVALID_KEYWORDS = [
   "green card only",
   "only green card",
   "w2 only",
+  "w-2 only",
   "only w2",
+  "only w-2",
   "no c2c",
   "no corp to corp",
   "not - a - hiring post",
@@ -115,6 +117,7 @@ const DEFAULT_INVALID_KEYWORDS = [
   "available on bench",
   "don't send resumes",
   "visa: usc",
+  "not for bench sales",
 ];
 
 // Skills to detect and tag separately
