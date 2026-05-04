@@ -125,14 +125,20 @@ try {
 
   // When we find a candidate, walk up to the nearest stable post root so
   // multiple inner-element matches collapse to one post.
-  // For new LinkedIn, we walk up from expandable-text-box to the post card.
+  // Listed from most-specific to least-specific — closest() stops at the first match.
   const POST_ROOT_SELECTORS = [
+    // Feed layouts
     "div.feed-shared-update-v2",
     "div.fie-impression-container",
     "div.update-components-update-v2",
+    // URN-based (works on feed AND search results)
     "[data-urn*=':activity:']",
     "[data-urn*=':share:']",
     "[data-urn*=':ugcPost:']",
+    // Search results page — each result is an <li> with one of these markers
+    "li.reusable-search__result-container",
+    "li[data-occludable-entity-urn]",
+    "li.artdeco-list__item",
   ];
 
   const DEBUG = true;
@@ -1503,41 +1509,27 @@ try {
   }
 
   function findPostRoot(el) {
-    // For new LinkedIn layout with data-testid="expandable-text-box",
-    // walk up to find the post card container (typically 8-10 levels up)
-    if (el.hasAttribute('data-testid') && el.getAttribute('data-testid') === 'expandable-text-box') {
-      let current = el;
-      // Walk up to find a container that looks like a post card
-      // Post cards typically have multiple children and substantial height
-      for (let i = 0; i < 12; i++) {
-        if (!current.parentElement) break;
-        current = current.parentElement;
-        
-        // Check if this looks like a post card container:
-        // - Has multiple children
-        // - Contains the text box we started from
-        // - Is a reasonable container size
-        if (current.children.length >= 1 && 
-            current !== el && 
-            current.contains(el)) {
-          // Stop at a container that has other post-like siblings
-          // or is clearly a card-level container
-          const siblings = current.parentElement ? current.parentElement.children.length : 0;
-          if (siblings > 10 || i >= 8) {
-            return current;
-          }
-        }
-      }
-      return current; // Return whatever we ended up at
-    }
-    
-    // Legacy selector-based approach for older layouts and groups
+    // Step 1: Try every stable selector first — works on feed, search results,
+    // and groups. This is the most reliable path and avoids the heuristic
+    // overshooting on search results pages where multiple posts share a deep
+    // common ancestor.
     for (const sel of POST_ROOT_SELECTORS) {
       const root = el.closest(sel);
       if (root) return root;
     }
-    
-    return el;
+
+    // Step 2: Fallback walk-up heuristic for layouts where no stable selector
+    // matches (e.g. future LinkedIn redesigns). Walk up until we reach an
+    // element that sits among many siblings — that's the post list level.
+    let current = el;
+    for (let i = 0; i < 12; i++) {
+      if (!current.parentElement) break;
+      current = current.parentElement;
+      const siblings = current.parentElement ? current.parentElement.children.length : 0;
+      // Stop when we're in a list of 5+ peers (feed/search list) or gone far enough
+      if (siblings >= 5 || i >= 8) return current;
+    }
+    return current;
   }
 
   // ---- Scan loop -----------------------------------------------------------

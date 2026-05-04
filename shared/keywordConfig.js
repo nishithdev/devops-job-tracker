@@ -75,6 +75,8 @@ const DEFAULT_DEVOPS_KEYWORDS = [
   "kibana",
   "new relic",
   "pagerduty",
+  "monitoring",
+  "observability",
 
   // Service mesh & networking
   "istio",
@@ -96,7 +98,11 @@ const DEFAULT_DEVOPS_KEYWORDS = [
   "node.js",
   "powershell",
   "power shell",
-
+  "lamda",
+  "rds",
+  "vnet",
+  "apim",
+  "app gateway",
 
   // Databases & messaging
   "mongodb",
@@ -200,6 +206,7 @@ const DEFAULT_INVALID_KEYWORDS = [
   "w-2 only",
   "only w2",
   "only w-2",
+  "contract on w2",
   "no c2c",
   "no corp to corp",
 
