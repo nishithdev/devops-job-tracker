@@ -7,16 +7,20 @@
   transition: outline-color 0.15s ease;
 }
 
-/* Floating bar in the top-right of a matched post */
+/* Inline label bar — sits above the post text, never overlaps it */
 .devops-scan-bar {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 9999;
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   align-items: center;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  border-left: 3px solid #2e7d32;
+  background: rgba(46, 125, 50, 0.05);
+  border-radius: 0 4px 4px 0;
   pointer-events: auto;
+  box-sizing: border-box;
+  width: 100%;
 }
 
 .devops-scan-badge {
@@ -147,12 +151,9 @@
   color: #333;
 }
 
-/* Keyword highlighting */
-mark.devops-scan-highlight {
-  background: #fff59d !important; /* Yellow highlight */
-  color: #000 !important;
-  font-weight: 600;
-  padding: 1px 2px;
+/* Keyword highlighting — background only, no font or colour overrides */
+mark.devops-scan-highlight--devops,
+mark.devops-scan-highlight--invalid {
+  padding: 0 1px;
   border-radius: 2px;
-  box-shadow: 0 0 0 1px rgba(255, 235, 59, 0.3);
 }

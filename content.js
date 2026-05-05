@@ -572,10 +572,20 @@ try {
       bar.appendChild(btn);
     }
 
-    // Make sure the post is positioned so our absolute bar anchors correctly.
-    const cs = window.getComputedStyle(postEl);
-    if (cs.position === "static") postEl.style.position = "relative";
-    postEl.appendChild(bar);
+    // Insert bar inline, directly before the post text so it never overlaps content.
+    // Try known text-container selectors; fall back to prepending to the post root.
+    const textContainer = postEl.querySelector(
+      "[data-testid='expandable-text-box']," +
+      ".feed-shared-update-v2__description," +
+      ".update-components-text," +
+      ".update-components-update-v2__commentary," +
+      "[data-test-id='main-feed-activity-card__commentary']"
+    );
+    if (textContainer && textContainer.parentNode) {
+      textContainer.parentNode.insertBefore(bar, textContainer);
+    } else {
+      postEl.prepend(bar);
+    }
 
     // Highlight matched keywords in post text
     highlightKeywords(postEl, info);
