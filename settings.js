@@ -270,6 +270,85 @@ document.getElementById('btn-test-ollama').addEventListener('click', () => {
     });
 });
 
+// ---- Bulk AI processing ------------------------------------------------------
+
+let bulkStopped = false;
+
+document.getElementById('btn-bulk-process').addEventListener('click', async () => {
+  const progressEl  = document.getElementById('bulk-progress');
+  const barEl       = document.getElementById('bulk-progress-bar');
+  const textEl      = document.getElementById('bulk-progress-text');
+  const startBtn    = document.getElementById('btn-bulk-process');
+  const stopBtn     = document.getElementById('btn-bulk-stop');
+
+  bulkStopped = false;
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+  stopBtn.style.opacity = '1';
+  progressEl.style.display = '';
+
+  const result = await new Promise(r => chrome.storage.local.get(['devopsSavedMatches'], r));
+  const matches = result.devopsSavedMatches || [];
+  const pending = matches.filter(m => !m.aiAnalysis);
+
+  if (pending.length === 0) {
+    textEl.textContent = '✅ All matches already analyzed.';
+    barEl.style.width = '100%';
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    stopBtn.style.opacity = '0.5';
+    return;
+  }
+
+  let done = 0;
+  let errors = 0;
+
+  for (const match of pending) {
+    if (bulkStopped) break;
+
+    textEl.textContent = `Processing ${done + 1} / ${pending.length} — "${match.author || 'Unknown'}"…`;
+
+    const text = match.fullText || match.snippet || '';
+    if (!text) { done++; continue; }
+
+    // AI analysis
+    const aiResp = await new Promise(r =>
+      chrome.runtime.sendMessage({ action: 'analyzeWithAI', text }, r)
+    );
+
+    if (aiResp && aiResp.success) {
+      // Store AI result and wait for it to flush
+      await new Promise(r =>
+        chrome.runtime.sendMessage({ action: 'storeAIAnalysis', matchId: match.id, analysis: aiResp.analysis }, r)
+      );
+      // Re-read from storage so notionPageId is included, then PATCH the existing Notion page
+      const fresh = await new Promise(r => chrome.storage.local.get(['devopsSavedMatches'], r));
+      const freshMatch = (fresh.devopsSavedMatches || []).find(m => m.id === match.id);
+      if (freshMatch) {
+        await new Promise(r =>
+          chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match: freshMatch }, r)
+        );
+      }
+    } else {
+      errors++;
+    }
+
+    done++;
+    barEl.style.width = `${Math.round((done / pending.length) * 100)}%`;
+  }
+
+  const stopped = bulkStopped ? ' (stopped early)' : '';
+  textEl.textContent = `✅ Done — ${done} processed, ${errors} errors${stopped}.`;
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+  stopBtn.style.opacity = '0.5';
+});
+
+document.getElementById('btn-bulk-stop').addEventListener('click', () => {
+  bulkStopped = true;
+  document.getElementById('bulk-progress-text').textContent = 'Stopping after current match…';
+});
+
 // ---- Notion sync -------------------------------------------------------------
 
 function loadNotionSettings() {

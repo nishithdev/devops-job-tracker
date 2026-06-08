@@ -207,6 +207,7 @@ function updateBulkActions() {
 
 function renderAICells(match) {
   const ai = match.aiAnalysis;
+  const expColor = { junior: '#1565c0', mid: '#2e7d32', senior: '#6a1b9a', lead: '#e65100', any: '#546e7a' };
   const pill = (val, color) => val
     ? `<span style="background:${color}22;color:${color};border:1px solid ${color}44;border-radius:8px;padding:2px 7px;font-size:11px;font-weight:600;white-space:nowrap;">${escapeHtml(val)}</span>`
     : '<span style="color:#bbb;font-size:11px;">—</span>';
@@ -215,21 +216,13 @@ function renderAICells(match) {
     const pending = match.aiAnalyzedAt === undefined
       ? '<span style="color:#bbb;font-size:11px;">pending</span>'
       : '<span style="color:#bbb;font-size:11px;">—</span>';
-    return `<td>${pending}</td><td>—</td><td>—</td><td>—</td>`;
+    return `<td>${pending}</td><td>—</td>`;
   }
 
-  const expColor  = { junior: '#1565c0', mid: '#2e7d32', senior: '#6a1b9a', lead: '#e65100', any: '#546e7a' };
-  const ctColor   = { 'c2c': '#b71c1c', 'w2': '#1b5e20', 'contract': '#e65100', 'full-time': '#1565c0', 'c2h': '#6a1b9a' };
-  const locColor  = { remote: '#2e7d32', hybrid: '#f57f17', onsite: '#1565c0' };
+  const jobTitle = ai.jobTitle ? `<span style="font-size:12px;font-weight:600;">${escapeHtml(ai.jobTitle)}</span>` : '—';
+  const exp      = pill(ai.experienceLevel, expColor[ai.experienceLevel] || '#546e7a');
 
-  const jobTitle  = ai.jobTitle  ? `<span style="font-size:12px;font-weight:600;">${escapeHtml(ai.jobTitle)}</span>` : '—';
-  const exp       = pill(ai.experienceLevel, expColor[ai.experienceLevel] || '#546e7a');
-  const contract  = pill(ai.contractType,    ctColor[ai.contractType]    || '#546e7a');
-  const loc       = ai.location
-    ? pill(ai.city ? `${ai.location} · ${ai.city}` : ai.location, locColor[ai.location] || '#546e7a')
-    : '<span style="color:#bbb;font-size:11px;">—</span>';
-
-  return `<td style="min-width:120px;">${jobTitle}</td><td>${exp}</td><td>${contract}</td><td>${loc}</td>`;
+  return `<td style="min-width:120px;">${jobTitle}</td><td>${exp}</td>`;
 }
 
 function renderMatches() {
@@ -467,8 +460,6 @@ function renderMatches() {
           <th class="sortable${sortColumn === 'status' ? (sortDirection === 'asc' ? ' sorted-asc' : ' sorted-desc') : ''}" data-column="status">Status</th>
           <th>AI Role</th>
           <th>Exp</th>
-          <th>Contract</th>
-          <th>Location</th>
           <th>Skills</th>
           <th>Source URL</th>
           <th>Full Post (with highlights)</th>

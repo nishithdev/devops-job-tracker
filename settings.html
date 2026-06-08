@@ -364,6 +364,23 @@
           </div>
         </div>
         <div id="ollama-status" style="margin-top:6px;font-size:12px;color:#757575;"></div>
+
+        <div style="margin-top:12px;padding-top:12px;border-top:1px solid #eee;">
+          <div style="font-size:13px;font-weight:600;margin-bottom:6px;">Bulk Process Existing Matches</div>
+          <div style="font-size:12px;color:#757575;margin-bottom:8px;">
+            Run AI analysis on all saved matches that haven't been processed yet, then re-sync them to Notion.
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <button class="btn" id="btn-bulk-process">▶ Process Unanalyzed</button>
+            <button class="btn" id="btn-bulk-stop" disabled style="opacity:0.5;">⏹ Stop</button>
+          </div>
+          <div id="bulk-progress" style="margin-top:8px;display:none;">
+            <div style="background:#eee;border-radius:4px;height:6px;overflow:hidden;">
+              <div id="bulk-progress-bar" style="background:#2e7d32;height:6px;width:0%;transition:width 0.3s;"></div>
+            </div>
+            <div id="bulk-progress-text" style="font-size:12px;color:#555;margin-top:4px;"></div>
+          </div>
+        </div>
       </div>
 
       <!-- Notion Sync -->

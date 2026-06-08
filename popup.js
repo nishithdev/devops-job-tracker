@@ -66,6 +66,18 @@ function updateStats() {
     document.getElementById('matches').textContent = res.devopsScanCount || 0;
     const savedMatches = res.devopsSavedMatches || [];
     document.getElementById('saved').textContent = savedMatches.length;
+
+    // AI analysis progress
+    const total = savedMatches.length;
+    const aiDone = savedMatches.filter(m => m.aiAnalysis).length;
+    const aiSection = document.getElementById('ai-progress-section');
+    if (total > 0) {
+      aiSection.style.display = '';
+      document.getElementById('ai-progress-label').textContent = `${aiDone} / ${total}`;
+      document.getElementById('ai-progress-bar').style.width = `${Math.round((aiDone / total) * 100)}%`;
+    } else {
+      aiSection.style.display = 'none';
+    }
     
     // Update auto-scroll state
     autoScrollActive = res.autoScrollState?.active || false;

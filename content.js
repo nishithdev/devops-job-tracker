@@ -1315,34 +1315,40 @@ try {
           }
           dbg('saved match:', match.id, info.devopsHits.join(', '));
 
-          // Run local AI analysis, then sync to Notion with AI fields included
-          chrome.runtime.sendMessage({ action: 'analyzeWithAI', text }, (aiResp) => {
-            if (chrome.runtime.lastError) {
-              dbg('AI analyze: context gone');
-              syncToNotion(match);
-              return;
-            }
-            if (aiResp && aiResp.success) {
+          // Step 1 — sync to Notion immediately so data is never lost
+          chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match }, (syncResp) => {
+            if (chrome.runtime.lastError) return;
+            if (syncResp && syncResp.error) dbg('notion sync error:', syncResp.error);
+            if (syncResp && syncResp.success) dbg('notion sync ok:', match.id);
+
+            // Step 2 — run AI analysis in the background
+            chrome.runtime.sendMessage({ action: 'analyzeWithAI', text }, (aiResp) => {
+              if (chrome.runtime.lastError || !aiResp || !aiResp.success) {
+                dbg('AI analyze skipped:', aiResp && aiResp.error);
+                return;
+              }
               dbg('AI analysis:', JSON.stringify(aiResp.analysis));
+
+              // Step 3 — store AI result, then PATCH the existing Notion page
               chrome.runtime.sendMessage({
                 action: 'storeAIAnalysis',
                 matchId: match.id,
                 analysis: aiResp.analysis,
+              }, () => {
+                // Re-read to get notionPageId that was stored during Step 1
+                chrome.storage.local.get(['devopsSavedMatches'], (res) => {
+                  const fresh = (res.devopsSavedMatches || []).find(m => m.id === match.id);
+                  if (fresh) {
+                    chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match: fresh }, (patchResp) => {
+                      if (chrome.runtime.lastError) return;
+                      if (patchResp && patchResp.success) dbg('notion AI patch ok:', match.id);
+                      if (patchResp && patchResp.error) dbg('notion AI patch error:', patchResp.error);
+                    });
+                  }
+                });
               });
-              syncToNotion({ ...match, aiAnalysis: aiResp.analysis });
-            } else {
-              dbg('AI analyze error:', aiResp && aiResp.error);
-              syncToNotion(match);
-            }
-          });
-
-          function syncToNotion(m) {
-            chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match: m }, (resp) => {
-              if (chrome.runtime.lastError) return;
-              if (resp && resp.success) dbg('notion sync ok:', m.id);
-              if (resp && resp.error) dbg('notion sync error:', resp.error);
             });
-          }
+          });
         });
       });
     } catch (e) {

@@ -117,7 +117,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         ? new Date(match.timestamp).toISOString().split('T')[0]
         : new Date().toISOString().split('T')[0];
 
-      const richText = (str) => str ? [{ text: { content: str.substring(0, 2000) } }] : [];
+      const richText = (str) => {
+        if (!str) return [];
+        // Notion rich_text items max 2000 chars each; split into chunks
+        const chunks = [];
+        for (let i = 0; i < str.length; i += 2000) {
+          chunks.push({ text: { content: str.substring(i, i + 2000) } });
+        }
+        return chunks;
+      };
 
       const properties = {
         Name: {
@@ -139,7 +147,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           date: { start: dateStr },
         },
         Snippet: {
-          rich_text: richText(match.snippet || ''),
+          rich_text: richText(match.fullText || match.snippet || ''),
         },
       };
 
@@ -149,22 +157,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const ai = match.aiAnalysis;
       if (ai) {
         if (ai.jobTitle)        properties['Job Title']        = { rich_text: richText(ai.jobTitle) };
-        if (ai.experienceLevel) properties['Experience Level'] = { select: { name: ai.experienceLevel } };
-        if (ai.contractType)    properties['Contract Type']    = { select: { name: ai.contractType } };
-        if (ai.location)        properties['Location']         = { select: { name: ai.location } };
-        if (ai.city)            properties['City']             = { rich_text: richText(ai.city) };
-        if (ai.companyType)     properties['Company Type']     = { select: { name: ai.companyType } };
-        if (ai.isJobPost !== undefined) properties['Is Job Post'] = { checkbox: !!ai.isJobPost };
+        if (ai.experienceLevel) properties['Experience Level'] = { rich_text: richText(ai.experienceLevel) };
         if (ai.confidence !== undefined) properties['AI Confidence'] = { number: ai.confidence };
       }
-
-      const body = { parent: { database_id: notionDatabaseId }, properties };
 
       const saveNotionStatus = (entry) =>
         chrome.storage.local.set({ notionLastSync: entry });
 
-      fetch('https://api.notion.com/v1/pages', {
-        method: 'POST',
+      // If we already have a Notion page ID for this match, PATCH it instead of creating a new page
+      const notionPageId = match.notionPageId;
+      const apiUrl    = notionPageId
+        ? `https://api.notion.com/v1/pages/${notionPageId}`
+        : 'https://api.notion.com/v1/pages';
+      const apiMethod = notionPageId ? 'PATCH' : 'POST';
+      const body      = notionPageId
+        ? { properties }
+        : { parent: { database_id: notionDatabaseId }, properties };
+
+      fetch(apiUrl, {
+        method: apiMethod,
         headers: {
           'Authorization': `Bearer ${notionToken}`,
           'Content-Type': 'application/json',
@@ -174,8 +185,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       })
         .then(async r => {
           if (r.ok) {
+            const data = await r.json();
             saveNotionStatus({ ok: true, ts: Date.now(), matchId: match.id });
-            sendResponse({ success: true });
+            // On first creation, save the Notion page ID back into the match
+            if (!notionPageId && data.id) {
+              chrome.storage.local.get(['devopsSavedMatches'], (res) => {
+                const matches = res.devopsSavedMatches || [];
+                const m = matches.find(m => m.id === match.id);
+                if (m) {
+                  m.notionPageId = data.id;
+                  chrome.storage.local.set({ devopsSavedMatches: matches });
+                }
+              });
+            }
+            sendResponse({ success: true, notionPageId: data.id });
           } else {
             const t = await r.text();
             saveNotionStatus({ ok: false, ts: Date.now(), error: `${r.status}: ${t}` });
@@ -193,8 +216,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // ---- Local AI analysis via Ollama -------------------------------------------
 // Calls a local Ollama instance to extract structured fields from a post.
-// Returns: { jobTitle, experienceLevel, contractType, location, isJobPost,
-//            companyType, confidence }
+// Returns: { jobTitle, experienceLevel, confidence }
 
   const AI_PROMPT = (text) => `You are a job post analyzer. Analyze the following LinkedIn post and extract structured information.
 
@@ -207,13 +229,8 @@ ${text.substring(0, 1500)}
 
 JSON schema to fill:
 {
-  "isJobPost": true or false,
   "jobTitle": "exact role title or null",
   "experienceLevel": "junior | mid | senior | lead | any | null",
-  "contractType": "full-time | contract | c2c | w2 | c2h | part-time | null",
-  "location": "remote | hybrid | onsite | null",
-  "city": "city name or null",
-  "companyType": "direct employer | staffing agency | unknown",
   "confidence": 0-100
 }`;
 
