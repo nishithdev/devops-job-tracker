@@ -26,6 +26,33 @@ function updateStatus(status) {
   }
 }
 
+function updateNotionStatus() {
+  safeStorageGet(['notionToken', 'notionDatabaseId', 'notionLastSync']).then((res) => {
+    const section = document.getElementById('notion-sync-section');
+    const el = document.getElementById('notion-sync-status');
+    if (!res.notionToken || !res.notionDatabaseId) return; // not configured — keep hidden
+    section.style.display = '';
+
+    const last = res.notionLastSync;
+    if (!last) {
+      el.innerHTML = '<span style="color:#757575;">No syncs yet — waiting for first match.</span>';
+      return;
+    }
+    const ago = Math.round((Date.now() - last.ts) / 1000);
+    const agoStr = ago < 60 ? `${ago}s ago` : ago < 3600 ? `${Math.round(ago/60)}m ago` : `${Math.round(ago/3600)}h ago`;
+    if (last.ok) {
+      el.innerHTML = `<span style="color:#2e7d32;">✅ Last sync: ${agoStr}</span>`;
+    } else {
+      const errText = last.error || 'Unknown error';
+      el.innerHTML = `
+        <span class="notion-error-trigger" style="color:#c62828;cursor:default;position:relative;display:inline-block;">
+          ❌ Last sync failed (${agoStr}) — hover for details
+          <span class="notion-error-tooltip">${errText}</span>
+        </span>`;
+    }
+  });
+}
+
 function updateStats() {
   safeStorageGet([
     'devopsScanCount',
@@ -199,8 +226,47 @@ function checkVersionUpdate() {
   });
 }
 
+document.getElementById('notion-test-sync').addEventListener('click', () => {
+  const btn = document.getElementById('notion-test-sync');
+  const el = document.getElementById('notion-sync-status');
+  btn.disabled = true;
+  btn.textContent = 'Syncing…';
+  el.innerHTML = '<span style="color:#757575;">Sending test match…</span>';
+
+  const testMatch = {
+    id: 'test:' + Date.now(),
+    timestamp: Date.now(),
+    author: 'Test Recruiter',
+    snippet: 'This is a test sync from LinkedIn DevOps Scanner.',
+    devopsKeywords: ['kubernetes', 'terraform'],
+    hiringHits: ['hiring'],
+    emails: [],
+    relevanceScore: 15,
+    status: 'new',
+    url: null,
+  };
+
+  chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match: testMatch }, (resp) => {
+    btn.disabled = false;
+    btn.textContent = 'Test Sync';
+    if (chrome.runtime.lastError) {
+      el.innerHTML = `<span style="color:#c62828;">❌ Runtime error: ${chrome.runtime.lastError.message}</span>`;
+      return;
+    }
+    if (resp && resp.success) {
+      el.innerHTML = '<span style="color:#2e7d32;">✅ Test sync succeeded — check your Notion database.</span>';
+    } else if (resp && resp.skipped) {
+      el.innerHTML = '<span style="color:#e65100;">⚠️ No credentials saved — configure in Settings first.</span>';
+    } else {
+      const err = (resp && resp.error) || 'Unknown error';
+      el.innerHTML = `<span class="notion-error-trigger" style="color:#c62828;cursor:default;position:relative;display:inline-block;">❌ Failed — hover for details<span class="notion-error-tooltip">${err}</span></span>`;
+    }
+  });
+});
+
 // Initialize
 updateStats();
+updateNotionStatus();
 checkFirstTimeUser();
 checkVersionUpdate();
 

@@ -370,9 +370,12 @@ function renderMatches() {
       sourceUrlHtml = `<a href="${escapeHtml(match.sourceUrl)}" target="_blank" style="color:#0a66c2;text-decoration:none;font-size:12px;" title="${escapeHtml(match.sourceUrl)}">${urlLabel} ↗</a>`;
     }
     
-    // Actions column
-    const openBtn = match.url 
-      ? `<a href="${escapeHtml(match.url)}" target="_blank" class="btn-open">Open ↗</a>`
+    // Actions column — show stale warning if the post was detected as deleted/gone
+    const staleTag = match.stale
+      ? `<span style="background:#fff3e0;color:#e65100;padding:2px 6px;border-radius:8px;font-size:11px;font-weight:600;margin-left:4px;" title="Post may be deleted or no longer available">⚠️ Stale</span>`
+      : '';
+    const openBtn = match.url
+      ? `<a href="${escapeHtml(match.url)}" target="_blank" class="btn-open">Open ↗</a>${staleTag}`
       : '';
     
     // Score badge — green ≥20, yellow 12-19, gray <12

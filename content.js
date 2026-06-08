@@ -549,13 +549,54 @@ try {
       badge.classList.add("devops-scan-badge--hiring");
     }
     bar.appendChild(badge);
-    
+
+    // Match counter — total unique keyword hits (devops + hiring signals)
+    if (!info.invalidHit) {
+      const totalHits = (info.devopsHits ? info.devopsHits.length : 0) +
+                        (info.hiringHits ? info.hiringHits.length : 0);
+      const counter = document.createElement("span");
+      counter.className = "devops-scan-match-counter";
+      counter.textContent = `${totalHits} match${totalHits !== 1 ? 'es' : ''}`;
+      counter.title = [...(info.devopsHits || []), ...(info.hiringHits || [])].join(', ');
+      bar.appendChild(counter);
+    }
+
     // Check for duplicates and add duplicate badge if found
     checkDuplicateAndDecorate(postEl, bar, url, text);
 
+    // Relevance score pill — only for valid hiring posts
+    if (!info.invalidHit) {
+      const score = computeRelevanceScore(
+        info.devopsHits, info.hiringHits, info.skills, text,
+        text.match(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g) || []
+      );
+      const scorePill = document.createElement("span");
+      scorePill.className = "devops-scan-score-pill";
+      if (score >= 20) {
+        scorePill.classList.add("devops-scan-score-pill--high");
+        scorePill.textContent = `⭐ ${score}`;
+        scorePill.title = `High relevance score: ${score}`;
+      } else if (score >= 12) {
+        scorePill.classList.add("devops-scan-score-pill--mid");
+        scorePill.textContent = `${score}`;
+        scorePill.title = `Medium relevance score: ${score}`;
+      } else {
+        scorePill.classList.add("devops-scan-score-pill--low");
+        scorePill.textContent = `${score}`;
+        scorePill.title = `Low relevance score: ${score}`;
+      }
+      bar.appendChild(scorePill);
+    }
+
     // "Applied" toggle — only for real hiring posts (invalid posts are not saved)
     if (!info.invalidHit) {
-      addApplyButton(bar, url, text);
+      addApplyButton(bar, url, text, postEl);
+      // Gmail draft button — only when emails are present in post
+      const postEmails = (text.match(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g) || []);
+      const uniquePostEmails = [...new Set(postEmails)].slice(0, 5);
+      if (uniquePostEmails.length > 0) {
+        addGmailDraftButton(bar, uniquePostEmails, info, url);
+      }
     }
 
     if (url) {
@@ -599,7 +640,10 @@ try {
 
   // Find a saved match by URL, falling back to snippet prefix when URL is absent.
   function findSavedMatch(matches, url, snippetPrefix) {
-    if (url) return matches.find(m => m.url === url) || null;
+    if (url) {
+      const byUrl = matches.find(m => m.url === url);
+      if (byUrl) return byUrl;
+    }
     if (snippetPrefix) {
       return matches.find(m => m.snippet && m.snippet.startsWith(snippetPrefix)) || null;
     }
@@ -617,11 +661,18 @@ try {
         const match = findSavedMatch(matches, url, snippetPrefix);
         if (match) {
           match.status = newStatus;
-          chrome.storage.local.set({ devopsSavedMatches: matches });
-          dbg('apply status set:', newStatus, url || snippetPrefix);
+          chrome.storage.local.set({ devopsSavedMatches: matches }, () => {
+            if (chrome.runtime.lastError) {
+              dbg('persistAppliedStatus write error:', chrome.runtime.lastError.message);
+            } else {
+              dbg('apply status set:', newStatus, url || snippetPrefix);
+            }
+          });
         } else if (attempt < 4) {
           // saveMatch() hasn't finished yet — retry
           setTimeout(() => persistAppliedStatus(url, snippetPrefix, newStatus, attempt + 1), 600);
+        } else {
+          dbg('persistAppliedStatus: match not found after retries, status lost', url || snippetPrefix);
         }
       });
     } catch (e) {
@@ -629,7 +680,7 @@ try {
     }
   }
 
-  function addApplyButton(bar, url, text) {
+  function addApplyButton(bar, url, text, postEl) {
     const snippetPrefix = text ? text.substring(0, 120) : '';
 
     const btn = document.createElement("button");
@@ -674,13 +725,16 @@ try {
 
     setUnapplied();
 
+    const applyDim = () => { if (postEl) postEl.classList.add('devops-scan-match--applied'); };
+    const removeDim = () => { if (postEl) postEl.classList.remove('devops-scan-match--applied'); };
+
     // Sync initial state from storage (match may already be marked applied)
     try {
       if (chrome.storage && chrome.storage.local) {
         chrome.storage.local.get(['devopsSavedMatches'], (result) => {
           if (chrome.runtime.lastError) return;
           const match = findSavedMatch(result.devopsSavedMatches || [], url, snippetPrefix);
-          if (match && match.status === 'applied') setApplied();
+          if (match && match.status === 'applied') { setApplied(); applyDim(); }
         });
       }
     } catch (e) { /* context invalidated */ }
@@ -691,8 +745,34 @@ try {
       const isApplied = btn.dataset.applied === "true";
       const newStatus = isApplied ? 'new' : 'applied';
       // Optimistic UI update — feels instant
-      if (newStatus === 'applied') setApplied(); else setUnapplied();
+      if (newStatus === 'applied') { setApplied(); applyDim(); } else { setUnapplied(); removeDim(); }
       persistAppliedStatus(url, snippetPrefix, newStatus);
+    });
+
+    bar.appendChild(btn);
+  }
+
+  function addGmailDraftButton(bar, emails, info, postUrl) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "devops-scan-gmail-btn";
+    btn.textContent = "✉️ Draft";
+    btn.title = `Draft outreach email to: ${emails.join(', ')}`;
+
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const to = emails[0];
+      const role = (info.devopsHits || []).slice(0, 2).join(' / ') || 'DevOps';
+      const subject = encodeURIComponent(`Interested in ${role} opportunity`);
+      const body = encodeURIComponent(
+        `Hi,\n\nI came across your post about a ${role} role and I'm very interested.\n\n` +
+        `I have experience with ${(info.skills || info.devopsHits || []).slice(0, 3).join(', ')} ` +
+        `and would love to connect.\n\nWould you be open to a quick chat?\n\nBest regards`
+      );
+      const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(to)}&su=${subject}&body=${body}`;
+      window.open(gmailUrl, "_blank", "noopener,noreferrer");
     });
 
     bar.appendChild(btn);
@@ -883,15 +963,13 @@ try {
    */
   function findDuplicate(newMatch, existingMatches, threshold = 85) {
     for (const existing of existingMatches) {
-      // Skip if comparing with itself
-      if (existing.id === newMatch.id) continue;
-      
       // Check URL first (exact match)
       if (newMatch.url && existing.url && newMatch.url === existing.url) {
         return existing.id;
       }
       
-      // Check snippet similarity
+      // Check snippet similarity (guard against missing snippet on older saved matches)
+      if (!existing.snippet) continue;
       const similarity = calculateSimilarity(newMatch.snippet, existing.snippet);
       
       if (similarity >= threshold) {
@@ -1034,6 +1112,12 @@ try {
             return;
           }
           dbg('saved match:', match.id, info.devopsHits.join(', '));
+          // Sync new match to Notion if configured
+          chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match }, (resp) => {
+            if (chrome.runtime.lastError) return; // extension context gone
+            if (resp && resp.success) dbg('notion sync ok:', match.id);
+            if (resp && resp.error) dbg('notion sync error:', resp.error);
+          });
         });
       });
     } catch (e) {

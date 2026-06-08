@@ -222,4 +222,62 @@ document.getElementById('add-invalid').addEventListener('keypress', (e) => {
 });
 
 // Initialize
+// ---- Notion sync -------------------------------------------------------------
+
+function loadNotionSettings() {
+  chrome.storage.local.get(['notionToken', 'notionDatabaseId'], (result) => {
+    if (result.notionToken) document.getElementById('notion-token').value = result.notionToken;
+    if (result.notionDatabaseId) document.getElementById('notion-database-id').value = result.notionDatabaseId;
+  });
+}
+
+document.getElementById('btn-save-notion').addEventListener('click', () => {
+  const token = document.getElementById('notion-token').value.trim();
+  const dbId = document.getElementById('notion-database-id').value.trim();
+  const status = document.getElementById('notion-status');
+  chrome.storage.local.set({ notionToken: token || null, notionDatabaseId: dbId || null }, () => {
+    status.textContent = (token && dbId) ? '✅ Notion credentials saved.' : '🗑️ Notion credentials cleared.';
+    status.style.color = '#2e7d32';
+    setTimeout(() => { status.textContent = ''; }, 3000);
+  });
+});
+
+document.getElementById('btn-test-notion').addEventListener('click', () => {
+  const token = document.getElementById('notion-token').value.trim();
+  const dbId = document.getElementById('notion-database-id').value.trim();
+  const status = document.getElementById('notion-status');
+  if (!token || !dbId) {
+    status.textContent = '⚠️ Enter both the integration token and database ID.';
+    status.style.color = '#e65100';
+    return;
+  }
+  status.textContent = 'Testing connection…';
+  status.style.color = '#757575';
+
+  // Test by fetching the database metadata
+  fetch(`https://api.notion.com/v1/databases/${dbId}`, {
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Notion-Version': '2022-06-28',
+    },
+  })
+    .then(async r => {
+      if (r.ok) {
+        const data = await r.json();
+        const name = data.title?.[0]?.plain_text || 'Untitled';
+        status.textContent = `✅ Connected to database: "${name}"`;
+        status.style.color = '#2e7d32';
+      } else {
+        const t = await r.text();
+        status.textContent = `❌ ${r.status}: ${t}`;
+        status.style.color = '#c62828';
+      }
+    })
+    .catch(err => {
+      status.textContent = `❌ ${err.message}`;
+      status.style.color = '#c62828';
+    });
+});
+
 loadSettings();
+loadNotionSettings();

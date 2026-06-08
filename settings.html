@@ -336,6 +336,37 @@
         </div>
       </div>
 
+      <!-- Notion Sync -->
+      <div class="section">
+        <div class="section-header">
+          <div>
+            <div class="section-title">📓 Notion Sync</div>
+          </div>
+        </div>
+        <div class="section-description">
+          Automatically push new matches to a Notion database. Create an
+          <a href="https://www.notion.so/my-integrations" target="_blank">internal integration</a>,
+          share your database with it, then paste the token and database ID below.
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">
+          <div style="display:flex;gap:8px;align-items:center;">
+            <label style="width:110px;font-size:13px;font-weight:600;">Integration Token</label>
+            <input type="password" id="notion-token" placeholder="secret_…"
+              style="flex:1;padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;" />
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <label style="width:110px;font-size:13px;font-weight:600;">Database ID</label>
+            <input type="text" id="notion-database-id" placeholder="32-char ID from the database URL"
+              style="flex:1;padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;" />
+          </div>
+          <div style="display:flex;gap:8px;">
+            <button class="btn" id="btn-save-notion">Save</button>
+            <button class="btn" id="btn-test-notion">Test Connection</button>
+          </div>
+        </div>
+        <div id="notion-status" style="margin-top:6px;font-size:12px;color:#757575;"></div>
+      </div>
+
       <!-- Actions -->
       <div class="actions">
         <button class="btn btn-danger" id="btn-reset-confirm">⚠️ Reset All to Defaults</button>

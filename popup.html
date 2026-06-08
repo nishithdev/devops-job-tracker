@@ -298,6 +298,27 @@
         font-size: 10px;
         font-weight: 600;
       }
+      .notion-error-tooltip {
+        display: none;
+        position: absolute;
+        left: 0;
+        top: 100%;
+        margin-top: 4px;
+        background: #212121;
+        color: #fff;
+        font-size: 11px;
+        padding: 6px 10px;
+        border-radius: 6px;
+        white-space: pre-wrap;
+        word-break: break-all;
+        max-width: 280px;
+        z-index: 999;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        line-height: 1.5;
+      }
+      .notion-error-trigger:hover .notion-error-tooltip {
+        display: block;
+      }
     </style>
   </head>
   <body>
@@ -349,6 +370,13 @@
         <div class="recent-matches" id="recent-matches">
           <div class="empty-state">No matches yet. Start browsing LinkedIn!</div>
         </div>
+      </div>
+
+      <!-- Notion Sync Status -->
+      <div class="section" id="notion-sync-section" style="display:none;">
+        <div class="section-title">📓 Notion Sync</div>
+        <div id="notion-sync-status" style="font-size:12px;margin-top:4px;"></div>
+        <button class="btn btn-secondary" id="notion-test-sync" style="margin-top:6px;font-size:11px;padding:4px 10px;">Test Sync</button>
       </div>
 
       <!-- Actions -->
