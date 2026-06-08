@@ -222,6 +222,54 @@ document.getElementById('add-invalid').addEventListener('keypress', (e) => {
 });
 
 // Initialize
+// ---- Ollama (local AI) -------------------------------------------------------
+
+function loadOllamaSettings() {
+  chrome.storage.local.get(['ollamaUrl', 'ollamaModel'], (result) => {
+    if (result.ollamaUrl) document.getElementById('ollama-url').value = result.ollamaUrl;
+    if (result.ollamaModel) document.getElementById('ollama-model').value = result.ollamaModel;
+  });
+}
+
+document.getElementById('btn-save-ollama').addEventListener('click', () => {
+  const url = document.getElementById('ollama-url').value.trim() || 'http://localhost:11434';
+  const model = document.getElementById('ollama-model').value.trim() || 'gemma3';
+  const status = document.getElementById('ollama-status');
+  chrome.storage.local.set({ ollamaUrl: url, ollamaModel: model }, () => {
+    status.textContent = `✅ Saved — ${model} @ ${url}`;
+    status.style.color = '#2e7d32';
+    setTimeout(() => { status.textContent = ''; }, 3000);
+  });
+});
+
+document.getElementById('btn-test-ollama').addEventListener('click', () => {
+  const url = (document.getElementById('ollama-url').value.trim() || 'http://localhost:11434').replace(/\/$/, '');
+  const model = document.getElementById('ollama-model').value.trim() || 'gemma3';
+  const status = document.getElementById('ollama-status');
+  status.textContent = `Testing ${model} @ ${url}…`;
+  status.style.color = '#757575';
+
+  fetch(`${url}/api/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, prompt: 'Reply with the single word: ok', stream: false }),
+  })
+    .then(async r => {
+      if (r.ok) {
+        const d = await r.json();
+        status.textContent = `✅ Connected — model responded: "${(d.response || '').trim().substring(0, 60)}"`;
+        status.style.color = '#2e7d32';
+      } else {
+        status.textContent = `❌ ${r.status} — is Ollama running and is "${model}" pulled?`;
+        status.style.color = '#c62828';
+      }
+    })
+    .catch(err => {
+      status.textContent = `❌ ${err.message} — is Ollama running at ${url}?`;
+      status.style.color = '#c62828';
+    });
+});
+
 // ---- Notion sync -------------------------------------------------------------
 
 function loadNotionSettings() {
@@ -280,4 +328,5 @@ document.getElementById('btn-test-notion').addEventListener('click', () => {
 });
 
 loadSettings();
+loadOllamaSettings();
 loadNotionSettings();

@@ -145,6 +145,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       if (match.url) properties.URL = { url: match.url };
 
+      // AI-extracted fields (optional — only present if Ollama ran successfully)
+      const ai = match.aiAnalysis;
+      if (ai) {
+        if (ai.jobTitle)        properties['Job Title']        = { rich_text: richText(ai.jobTitle) };
+        if (ai.experienceLevel) properties['Experience Level'] = { select: { name: ai.experienceLevel } };
+        if (ai.contractType)    properties['Contract Type']    = { select: { name: ai.contractType } };
+        if (ai.location)        properties['Location']         = { select: { name: ai.location } };
+        if (ai.city)            properties['City']             = { rich_text: richText(ai.city) };
+        if (ai.companyType)     properties['Company Type']     = { select: { name: ai.companyType } };
+        if (ai.isJobPost !== undefined) properties['Is Job Post'] = { checkbox: !!ai.isJobPost };
+        if (ai.confidence !== undefined) properties['AI Confidence'] = { number: ai.confidence };
+      }
+
       const body = { parent: { database_id: notionDatabaseId }, properties };
 
       const saveNotionStatus = (entry) =>
@@ -175,6 +188,81 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         });
     });
     return true; // keep channel open for async response
+  }
+});
+
+// ---- Local AI analysis via Ollama -------------------------------------------
+// Calls a local Ollama instance to extract structured fields from a post.
+// Returns: { jobTitle, experienceLevel, contractType, location, isJobPost,
+//            companyType, confidence }
+
+  const AI_PROMPT = (text) => `You are a job post analyzer. Analyze the following LinkedIn post and extract structured information.
+
+Respond ONLY with a valid JSON object — no markdown, no explanation, no code fences.
+
+Post text:
+"""
+${text.substring(0, 1500)}
+"""
+
+JSON schema to fill:
+{
+  "isJobPost": true or false,
+  "jobTitle": "exact role title or null",
+  "experienceLevel": "junior | mid | senior | lead | any | null",
+  "contractType": "full-time | contract | c2c | w2 | c2h | part-time | null",
+  "location": "remote | hybrid | onsite | null",
+  "city": "city name or null",
+  "companyType": "direct employer | staffing agency | unknown",
+  "confidence": 0-100
+}`;
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === 'analyzeWithAI') {
+    chrome.storage.local.get(['ollamaUrl', 'ollamaModel'], (result) => {
+      const url = (result.ollamaUrl || 'http://localhost:11434').replace(/\/$/, '');
+      const model = result.ollamaModel || 'gemma3';
+
+      fetch(`${url}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          prompt: AI_PROMPT(message.text),
+          stream: false,
+          format: 'json',
+        }),
+      })
+        .then(async r => {
+          if (!r.ok) { sendResponse({ error: `Ollama ${r.status}` }); return; }
+          const data = await r.json();
+          try {
+            const parsed = JSON.parse(data.response);
+            sendResponse({ success: true, analysis: parsed });
+          } catch (_) {
+            sendResponse({ error: 'AI returned invalid JSON', raw: data.response });
+          }
+        })
+        .catch(err => sendResponse({ error: err.message }));
+    });
+    return true;
+  }
+});
+
+// ---- Store AI analysis back into the saved match ----------------------------
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === 'storeAIAnalysis') {
+    chrome.storage.local.get(['devopsSavedMatches'], (result) => {
+      const matches = result.devopsSavedMatches || [];
+      const match = matches.find(m => m.id === message.matchId);
+      if (!match) { sendResponse({ error: 'match not found' }); return; }
+      match.aiAnalysis = message.analysis;
+      match.aiAnalyzedAt = Date.now();
+      chrome.storage.local.set({ devopsSavedMatches: matches }, () => {
+        sendResponse({ success: true });
+      });
+    });
+    return true;
   }
 });
 
