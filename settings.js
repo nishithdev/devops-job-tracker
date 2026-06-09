@@ -286,10 +286,71 @@ document.getElementById('btn-bulk-process').addEventListener('click', async () =
   stopBtn.disabled = false;
   stopBtn.style.opacity = '1';
   progressEl.style.display = '';
+  textEl.textContent = 'Fetching matches from Notion…';
 
-  const result = await new Promise(r => chrome.storage.local.get(['devopsSavedMatches'], r));
-  const matches = result.devopsSavedMatches || [];
-  const pending = matches.filter(m => !m.aiAnalysis);
+  // Pull all pages from Notion and merge any that aren't in local storage
+  const credsResult = await new Promise(r => chrome.storage.local.get(['notionToken', 'notionDatabaseId', 'devopsSavedMatches'], r));
+  let localMatches = credsResult.devopsSavedMatches || [];
+
+  if (credsResult.notionToken && credsResult.notionDatabaseId) {
+    try {
+      let hasMore = true;
+      let cursor = undefined;
+      while (hasMore) {
+        const body = { page_size: 100 };
+        if (cursor) body.start_cursor = cursor;
+        const resp = await fetch(`https://api.notion.com/v1/databases/${credsResult.notionDatabaseId}/query`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${credsResult.notionToken}`,
+            'Content-Type': 'application/json',
+            'Notion-Version': '2022-06-28',
+          },
+          body: JSON.stringify(body),
+        });
+        if (!resp.ok) break;
+        const data = await resp.json();
+        hasMore = data.has_more;
+        cursor = data.next_cursor;
+
+        for (const page of (data.results || [])) {
+          const props = page.properties || {};
+          const notionPageId = page.id;
+          // Skip if already in local storage by notionPageId
+          if (localMatches.find(m => m.notionPageId === notionPageId)) continue;
+          // Extract snippet/fullText from Notion Snippet property
+          const snippetBlocks = props.Snippet?.rich_text || [];
+          const fullText = snippetBlocks.map(b => b.plain_text || b.text?.content || '').join('');
+          if (!fullText) continue;
+          const nameBlocks = props.Name?.title || [];
+          const author = nameBlocks.map(b => b.plain_text || b.text?.content || '').join('') || 'Unknown';
+          const urlProp = props.URL?.url || null;
+          const ts = page.created_time ? new Date(page.created_time).getTime() : Date.now();
+          const newMatch = {
+            id: 'notion:' + notionPageId,
+            notionPageId,
+            author,
+            fullText,
+            snippet: fullText.substring(0, 120),
+            url: urlProp,
+            timestamp: ts,
+            devopsKeywords: [],
+            status: 'new',
+          };
+          localMatches.push(newMatch);
+        }
+      }
+      await new Promise(r => chrome.storage.local.set({ devopsSavedMatches: localMatches }, r));
+    } catch (e) {
+      console.warn('[BulkProcess] Notion fetch failed:', e.message);
+    }
+  }
+
+  const AI_FIELDS = ['jobTitle', 'experienceLevel', 'visaSponsorship'];
+  const needsAnalysis = (m) => !m.aiAnalysis || AI_FIELDS.some(f => m.aiAnalysis[f] === undefined);
+
+  const matches = localMatches;
+  const pending = matches.filter(needsAnalysis);
 
   if (pending.length === 0) {
     textEl.textContent = '✅ All matches already analyzed.';

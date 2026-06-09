@@ -156,8 +156,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // AI-extracted fields (optional — only present if Ollama ran successfully)
       const ai = match.aiAnalysis;
       if (ai) {
-        if (ai.jobTitle)        properties['Job Title']        = { rich_text: richText(ai.jobTitle) };
-        if (ai.experienceLevel) properties['Experience Level'] = { rich_text: richText(ai.experienceLevel) };
+        if (ai.jobTitle)          properties['Job Title']        = { rich_text: richText(ai.jobTitle) };
+        if (ai.experienceLevel)   properties['Experience Level'] = { rich_text: richText(ai.experienceLevel) };
+        if (ai.visaSponsorship)   properties['VISA']             = { rich_text: richText(ai.visaSponsorship) };
         if (ai.confidence !== undefined) properties['AI Confidence'] = { number: ai.confidence };
       }
 
@@ -216,23 +217,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // ---- Local AI analysis via Ollama -------------------------------------------
 // Calls a local Ollama instance to extract structured fields from a post.
-// Returns: { jobTitle, experienceLevel, confidence }
+// Returns: { jobTitle, experienceLevel, visaSponsorship, confidence }
 
-  const AI_PROMPT = (text) => `You are a job post analyzer. Analyze the following LinkedIn post and extract structured information.
-
-Respond ONLY with a valid JSON object — no markdown, no explanation, no code fences.
-
-Post text:
-"""
-${text.substring(0, 1500)}
-"""
-
-JSON schema to fill:
-{
-  "jobTitle": "exact role title or null",
-  "experienceLevel": "junior | mid | senior | lead | any | null",
-  "confidence": 0-100
-}`;
+const AI_PROMPT = (text) => [
+  'You are a job post analyzer. Analyze the following LinkedIn post and extract structured information.',
+  'Respond ONLY with a valid JSON object - no markdown, no explanation, no code fences.',
+  'Post text:',
+  text.substring(0, 1500),
+  'JSON schema to fill:',
+  '{',
+  '  "jobTitle": "exact role title or null",',
+  '  "experienceLevel": "junior | mid | senior | lead | any | null",',
+  '  "visaSponsorship": "short summary or null",',
+  '  "confidence": 0-100',
+  '}',
+  'For visaSponsorship: Extract exactly what visa statuses are mentioned.',
+  'Examples: H1B sponsored, No H1B, GC/Citizen only, OPT/CPT accepted, No sponsorship, H1B transfer ok, GC EAD accepted.',
+  'If nothing is mentioned return null.',
+].join('\n');
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'analyzeWithAI') {

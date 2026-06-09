@@ -212,17 +212,26 @@ function renderAICells(match) {
     ? `<span style="background:${color}22;color:${color};border:1px solid ${color}44;border-radius:8px;padding:2px 7px;font-size:11px;font-weight:600;white-space:nowrap;">${escapeHtml(val)}</span>`
     : '<span style="color:#bbb;font-size:11px;">—</span>';
 
+  const visaColorFor = (v) => {
+    if (!v) return '#757575';
+    const l = v.toLowerCase();
+    if (l.includes('no h1b') || l.includes('no sponsor') || l.includes('citizen only') || l.includes('gc only') || l.includes('gc/citizen')) return '#c62828';
+    if (l.includes('h1b') || l.includes('sponsor')) return '#2e7d32';
+    return '#e65100'; // OPT, EAD, transfer, etc.
+  };
+
   if (!ai) {
     const pending = match.aiAnalyzedAt === undefined
       ? '<span style="color:#bbb;font-size:11px;">pending</span>'
       : '<span style="color:#bbb;font-size:11px;">—</span>';
-    return `<td>${pending}</td><td>—</td>`;
+    return `<td>${pending}</td><td>—</td><td>—</td>`;
   }
 
   const jobTitle = ai.jobTitle ? `<span style="font-size:12px;font-weight:600;">${escapeHtml(ai.jobTitle)}</span>` : '—';
   const exp      = pill(ai.experienceLevel, expColor[ai.experienceLevel] || '#546e7a');
+  const visa     = pill(ai.visaSponsorship, visaColorFor(ai.visaSponsorship));
 
-  return `<td style="min-width:120px;">${jobTitle}</td><td>${exp}</td>`;
+  return `<td style="min-width:120px;">${jobTitle}</td><td>${exp}</td><td>${visa}</td>`;
 }
 
 function renderMatches() {
@@ -460,6 +469,7 @@ function renderMatches() {
           <th class="sortable${sortColumn === 'status' ? (sortDirection === 'asc' ? ' sorted-asc' : ' sorted-desc') : ''}" data-column="status">Status</th>
           <th>AI Role</th>
           <th>Exp</th>
+          <th>VISA</th>
           <th>Skills</th>
           <th>Source URL</th>
           <th>Full Post (with highlights)</th>
