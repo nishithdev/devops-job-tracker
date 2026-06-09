@@ -296,6 +296,8 @@ document.getElementById('btn-bulk-process').addEventListener('click', async () =
     try {
       let hasMore = true;
       let cursor = undefined;
+      const activeNotionIds = new Set();
+
       while (hasMore) {
         const body = { page_size: 100 };
         if (cursor) body.start_cursor = cursor;
@@ -314,11 +316,16 @@ document.getElementById('btn-bulk-process').addEventListener('click', async () =
         cursor = data.next_cursor;
 
         for (const page of (data.results || [])) {
+          // Archived = deleted in Notion — treat as source of truth, skip entirely
+          if (page.archived) continue;
+
+          activeNotionIds.add(page.id);
           const props = page.properties || {};
           const notionPageId = page.id;
-          // Skip if already in local storage by notionPageId
+
+          // Already in local storage — nothing to import
           if (localMatches.find(m => m.notionPageId === notionPageId)) continue;
-          // Extract snippet/fullText from Notion Snippet property
+
           const snippetBlocks = props.Snippet?.rich_text || [];
           const fullText = snippetBlocks.map(b => b.plain_text || b.text?.content || '').join('');
           if (!fullText) continue;
@@ -326,7 +333,7 @@ document.getElementById('btn-bulk-process').addEventListener('click', async () =
           const author = nameBlocks.map(b => b.plain_text || b.text?.content || '').join('') || 'Unknown';
           const urlProp = props.URL?.url || null;
           const ts = page.created_time ? new Date(page.created_time).getTime() : Date.now();
-          const newMatch = {
+          localMatches.push({
             id: 'notion:' + notionPageId,
             notionPageId,
             author,
@@ -336,10 +343,17 @@ document.getElementById('btn-bulk-process').addEventListener('click', async () =
             timestamp: ts,
             devopsKeywords: [],
             status: 'new',
-          };
-          localMatches.push(newMatch);
+          });
         }
       }
+
+      // Mark any local match whose Notion page was deleted/archived
+      for (const m of localMatches) {
+        if (m.notionPageId && !activeNotionIds.has(m.notionPageId)) {
+          m.notionDeleted = true;
+        }
+      }
+
       await new Promise(r => chrome.storage.local.set({ devopsSavedMatches: localMatches }, r));
     } catch (e) {
       console.warn('[BulkProcess] Notion fetch failed:', e.message);
@@ -347,10 +361,11 @@ document.getElementById('btn-bulk-process').addEventListener('click', async () =
   }
 
   const AI_FIELDS = ['jobTitle', 'experienceLevel', 'visaSponsorship'];
-  const needsAnalysis = (m) => !m.aiAnalysis || AI_FIELDS.some(f => m.aiAnalysis[f] === undefined);
+  const needsAnalysis = (m) => !m.aiAnalysis || AI_FIELDS.some(f => m.aiAnalysis[f] == null || m.aiAnalysis[f] === '');
 
   const matches = localMatches;
-  const pending = matches.filter(needsAnalysis);
+  // Skip matches deleted in Notion
+  const pending = matches.filter(m => !m.notionDeleted && needsAnalysis(m));
 
   if (pending.length === 0) {
     textEl.textContent = '✅ All matches already analyzed.';

@@ -202,6 +202,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             sendResponse({ success: true, notionPageId: data.id });
           } else {
             const t = await r.text();
+            // Page was deleted in Notion — mark locally and don't retry as PATCH
+            if (r.status === 404 && notionPageId) {
+              chrome.storage.local.get(['devopsSavedMatches'], (res) => {
+                const matches = res.devopsSavedMatches || [];
+                const m = matches.find(m => m.id === match.id);
+                if (m) {
+                  m.notionDeleted = true;
+                  chrome.storage.local.set({ devopsSavedMatches: matches });
+                }
+              });
+            }
             saveNotionStatus({ ok: false, ts: Date.now(), error: `${r.status}: ${t}` });
             sendResponse({ error: `${r.status}: ${t}` });
           }
