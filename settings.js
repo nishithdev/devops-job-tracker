@@ -257,7 +257,7 @@ document.getElementById('btn-test-ollama').addEventListener('click', () => {
     .then(async r => {
       if (r.ok) {
         const d = await r.json();
-        status.textContent = `✅ Connected — model responded: "${(d.response || '').trim().substring(0, 60)}"`;
+        status.textContent = `✅ Connected — using ${model} — responded: "${(d.response || '').trim().substring(0, 60)}"`;
         status.style.color = '#2e7d32';
       } else {
         status.textContent = `❌ ${r.status} — is Ollama running and is "${model}" pulled?`;
@@ -395,7 +395,7 @@ document.getElementById('btn-bulk-process').addEventListener('click', async () =
     if (aiResp && aiResp.success) {
       // Store AI result and wait for it to flush
       await new Promise(r =>
-        chrome.runtime.sendMessage({ action: 'storeAIAnalysis', matchId: match.id, analysis: aiResp.analysis }, r)
+        chrome.runtime.sendMessage({ action: 'storeAIAnalysis', matchId: match.id, analysis: aiResp.analysis, timeToProcess: aiResp.timeToProcess, model: aiResp.model }, r)
       );
       // Re-read from storage so notionPageId is included, then PATCH the existing Notion page
       const fresh = await new Promise(r => chrome.storage.local.get(['devopsSavedMatches'], r));

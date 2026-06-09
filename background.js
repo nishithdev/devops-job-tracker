@@ -161,6 +161,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (ai.visaSponsorship)   properties['VISA']             = { rich_text: richText(ai.visaSponsorship) };
         if (ai.confidence !== undefined) properties['AI Confidence'] = { number: ai.confidence };
       }
+      if (match.aiTimeToProcess !== undefined) properties['AI Time (ms)'] = { number: match.aiTimeToProcess };
+      if (match.aiModel) properties['AI Model'] = { rich_text: richText(match.aiModel) };
 
       const saveNotionStatus = (entry) =>
         chrome.storage.local.set({ notionLastSync: entry });
@@ -252,6 +254,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     chrome.storage.local.get(['ollamaUrl', 'ollamaModel'], (result) => {
       const url = (result.ollamaUrl || 'http://localhost:11434').replace(/\/$/, '');
       const model = result.ollamaModel || 'gemma3';
+      const startTime = Date.now();
 
       fetch(`${url}/api/generate`, {
         method: 'POST',
@@ -266,9 +269,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         .then(async r => {
           if (!r.ok) { sendResponse({ error: `Ollama ${r.status}` }); return; }
           const data = await r.json();
+          const timeToProcess = Date.now() - startTime;
           try {
             const parsed = JSON.parse(data.response);
-            sendResponse({ success: true, analysis: parsed });
+            sendResponse({ success: true, analysis: parsed, timeToProcess, model });
           } catch (_) {
             sendResponse({ error: 'AI returned invalid JSON', raw: data.response });
           }
@@ -288,6 +292,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (!match) { sendResponse({ error: 'match not found' }); return; }
       match.aiAnalysis = message.analysis;
       match.aiAnalyzedAt = Date.now();
+      if (message.timeToProcess !== undefined) match.aiTimeToProcess = message.timeToProcess;
+      if (message.model) match.aiModel = message.model;
       chrome.storage.local.set({ devopsSavedMatches: matches }, () => {
         sendResponse({ success: true });
       });

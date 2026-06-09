@@ -4,6 +4,31 @@ A Chrome extension that scans your LinkedIn feed for DevOps job posts, scores th
 
 ---
 
+## Data Flow
+
+```mermaid
+flowchart TD
+    A([LinkedIn Feed / Search Page]) -->|content.js scans DOM on scroll| B[V2 Classifier\nscore + keyword match]
+    B -->|score > threshold| C[Highlight post\nshow score pill]
+    C -->|user clicks Save| D[chrome.storage.local\ndevopsSavedMatches]
+
+    D -->|Step 1 - auto trigger| E[background.js\nsyncMatchToNotion]
+    E -->|POST /v1/pages| F[(Notion Database)]
+
+    D -->|Step 2 - auto trigger| G[background.js\nanalyzeWithAI]
+    G -->|POST /api/generate| H([Ollama\nlocal model])
+    H -->|JSON: jobTitle\nexperienceLevel\nvisaSponsorship\nconfidence| G
+    G -->|timeToProcess + model recorded| I[storeAIAnalysis\nback to storage]
+    I -->|Step 3 - PATCH existing page| E
+
+    F -->|columns updated| J[Job Title · Experience Level\nVISA · AI Confidence\nAI Model · AI Time ms]
+
+    K([Settings — Bulk Process]) -->|for each unanalyzed match| G
+    L([Stale Check — 24h cron]) -->|HEAD each saved URL| D
+```
+
+---
+
 ## Installation
 
 1. Clone or download this repo

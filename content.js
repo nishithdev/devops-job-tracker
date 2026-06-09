@@ -1334,6 +1334,8 @@ try {
                 action: 'storeAIAnalysis',
                 matchId: match.id,
                 analysis: aiResp.analysis,
+                timeToProcess: aiResp.timeToProcess,
+                model: aiResp.model,
               }, () => {
                 // Re-read to get notionPageId that was stored during Step 1
                 chrome.storage.local.get(['devopsSavedMatches'], (res) => {
