@@ -197,7 +197,8 @@ try {
     return needles.find((n) => {
       // Normalize needle to lowercase so it matches the lowercased haystack
       // regardless of how the user typed the keyword (SRE, sre, Sre all work)
-      const needle = n.toLowerCase();
+      // Trim to handle keywords with accidental leading/trailing whitespace
+      const needle = n.toLowerCase().trim();
       // Use word boundary matching for short keywords (3 chars or less)
       // to avoid false positives:
       //   "sre" should NOT match "insure", "ensure", "disrespect"
@@ -220,7 +221,8 @@ try {
     // Returns ALL matching keywords (not just the first one)
     return needles.filter((n) => {
       // Normalize needle to lowercase so uppercase custom keywords (SRE, AWS) match correctly
-      const needle = n.toLowerCase();
+      // Trim to handle keywords with accidental leading/trailing whitespace
+      const needle = n.toLowerCase().trim();
       if (needle.length <= 3 && /^[a-z0-9]+$/.test(needle)) {
         const regex = getCachedRegex(needle, 'i');
         return regex.test(haystack);
@@ -855,24 +857,13 @@ try {
   // match hasn't been persisted by saveMatch() yet (async race window).
   function persistAppliedStatus(url, snippetPrefix, newStatus, attempt = 0) {
     try {
-      if (!chrome.storage || !chrome.storage.local) return;
-      chrome.storage.local.get(['devopsSavedMatches'], (result) => {
+      chrome.runtime.sendMessage({ action: 'updateMatchStatus', url, snippetPrefix, status: newStatus }, (resp) => {
         if (chrome.runtime.lastError) return;
-        const matches = result.devopsSavedMatches || [];
-        const match = findSavedMatch(matches, url, snippetPrefix);
-        if (match) {
-          match.status = newStatus;
-          chrome.storage.local.set({ devopsSavedMatches: matches }, () => {
-            if (chrome.runtime.lastError) {
-              dbg('persistAppliedStatus write error:', chrome.runtime.lastError.message);
-            } else {
-              dbg('apply status set:', newStatus, url || snippetPrefix);
-            }
-          });
-        } else if (attempt < 4) {
-          // saveMatch() hasn't finished yet — retry
+        if (resp && resp.success) {
+          dbg('apply status set:', newStatus, url || snippetPrefix);
+        } else if (resp && resp.error === 'not found' && attempt < 4) {
           setTimeout(() => persistAppliedStatus(url, snippetPrefix, newStatus, attempt + 1), 600);
-        } else {
+        } else if (resp && resp.error === 'not found') {
           dbg('persistAppliedStatus: match not found after retries, status lost', url || snippetPrefix);
         }
       });
@@ -1301,16 +1292,17 @@ try {
           // to avoid double-counting and ensure UI badge appears first
         }
         
-        matches.unshift(match); // Add to front (newest first)
-        
-        // Keep only last 500 matches to avoid storage bloat
-        if (matches.length > 500) {
-          matches.length = 500;
-        }
-        
-        chrome.storage.local.set({ devopsSavedMatches: matches }, () => {
+        chrome.runtime.sendMessage({ action: 'saveMatch', match }, (saveResp) => {
           if (chrome.runtime.lastError) {
-            dbg('storage.set error:', chrome.runtime.lastError.message);
+            dbg('saveMatch error:', chrome.runtime.lastError.message);
+            return;
+          }
+          if (saveResp && saveResp.duplicate) {
+            dbg('match already saved (race dedup):', match.url);
+            return;
+          }
+          if (saveResp && saveResp.error) {
+            dbg('storage.set error:', saveResp.error);
             return;
           }
           dbg('saved match:', match.id, info.devopsHits.join(', '));
@@ -2022,6 +2014,7 @@ try {
       }
     });
     if (processed) dbg(`  processed ${processed} new posts this scan`);
+    if (isJobsPage()) scanJobCards();
   }
 
   // Re-scan as LinkedIn lazily injects more posts during scroll.
@@ -2200,6 +2193,171 @@ try {
       return true;
     }
   });
+
+  // ---- LinkedIn Jobs Search Scanner (/jobs/search) ---------------------------
+
+  const JOBS_MARK_ATTR = 'data-devops-job';
+  const seenJobs = new Set();
+
+  function isJobsPage() {
+    return location.pathname.startsWith('/jobs/');
+  }
+
+  function getJobCardText(card) {
+    // Job cards have title + company + location in structured elements
+    const parts = [];
+    const title    = card.querySelector('.job-card-list__title, .job-card-container__link, [data-control-name="jobcard_title"]');
+    const company  = card.querySelector('.job-card-container__primary-description, .artdeco-entity-lockup__subtitle');
+    const location = card.querySelector('.job-card-container__metadata-item, .artdeco-entity-lockup__caption');
+    if (title)    parts.push(title.innerText || title.textContent);
+    if (company)  parts.push(company.innerText || company.textContent);
+    if (location) parts.push(location.innerText || location.textContent);
+    return parts.join(' ').replace(/\s+/g, ' ').trim();
+  }
+
+  function getJobDetailText() {
+    // Right-panel job detail view
+    const detail = document.querySelector(
+      '.job-view-layout, .jobs-description, .jobs-details__main-content, [data-job-id]'
+    );
+    return detail ? (detail.innerText || detail.textContent || '').replace(/\s+/g, ' ').trim() : '';
+  }
+
+  function getJobCardUrl(card) {
+    const a = card.querySelector('a[href*="/jobs/view/"]');
+    if (a) return a.href.split('?')[0];
+    const jobId = card.getAttribute('data-job-id') || card.querySelector('[data-job-id]')?.getAttribute('data-job-id');
+    if (jobId) return `https://www.linkedin.com/jobs/view/${jobId}/`;
+    return null;
+  }
+
+  function saveJobMatch(url, text, cardText, info) {
+    if (!chrome.storage || !chrome.storage.local) return;
+    const emailRegex = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g;
+    const emails = [...new Set((text.match(emailRegex) || []).slice(0, 5))];
+    const snippet = text.substring(0, 200) + (text.length > 200 ? '...' : '');
+    const relevanceScore = computeRelevanceScore(info.devopsHits, info.hiringHits, info.skills, text, emails);
+
+    // Try to get job title and company from card
+    const titleEl   = document.querySelector('.job-card-list__title, .jobs-unified-top-card__job-title, h1.t-24');
+    const companyEl = document.querySelector('.job-card-container__primary-description, .jobs-unified-top-card__company-name');
+    const author = [
+      titleEl   ? (titleEl.innerText   || titleEl.textContent).trim()   : null,
+      companyEl ? (companyEl.innerText || companyEl.textContent).trim() : null,
+    ].filter(Boolean).join(' — ') || 'Job Post';
+
+    chrome.storage.local.get(['devopsSavedMatches'], (result) => {
+      if (chrome.runtime.lastError) return;
+      const matches = result.devopsSavedMatches || [];
+      if (url && matches.some(m => m.url === url)) return;
+
+      const match = {
+        id: `match:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+        url,
+        sourceUrl: window.location.href,
+        timestamp: Date.now(),
+        author,
+        snippet,
+        fullText: text,
+        devopsKeywords: info.devopsHits,
+        devopsKeyword: info.devopsHits[0],
+        hiringSignal: info.hiringHit || null,
+        invalidKeyword: null,
+        isHiring: true,
+        emails,
+        skills: info.skills || [],
+        status: 'new',
+        duplicateOf: null,
+        hiringSignals: info.hiringHits || [],
+        relevanceScore,
+        source: 'jobs',
+      };
+
+      chrome.runtime.sendMessage({ action: 'saveMatch', match }, (saveResp) => {
+        if (chrome.runtime.lastError || !saveResp || saveResp.duplicate || saveResp.error) return;
+        dbg('[Jobs] saved job match:', url);
+        updateIndicator();
+        chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match }, () => {
+          if (chrome.runtime.lastError) return;
+          chrome.runtime.sendMessage({ action: 'analyzeWithAI', text }, (aiResp) => {
+            if (chrome.runtime.lastError || !aiResp?.success) return;
+            chrome.runtime.sendMessage({
+              action: 'storeAIAnalysis',
+              matchId: match.id,
+              analysis: aiResp.analysis,
+              timeToProcess: aiResp.timeToProcess,
+              model: aiResp.model,
+              tokens: aiResp.tokens,
+            }, () => {
+              chrome.storage.local.get(['devopsSavedMatches'], (res) => {
+                const fresh = (res.devopsSavedMatches || []).find(m => m.id === match.id);
+                if (fresh) chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match: fresh });
+              });
+            });
+          });
+        });
+      });
+    });
+  }
+
+  function decorateJobCard(card, info, url) {
+    card.setAttribute(JOBS_MARK_ATTR, 'match');
+    card.style.borderLeft = '3px solid #2e7d32';
+    card.style.backgroundColor = 'rgba(46,125,50,0.04)';
+
+    const badge = document.createElement('div');
+    badge.style.cssText = 'font-size:10px;color:#2e7d32;font-weight:700;padding:2px 4px;';
+    badge.textContent = `DevOps · ${info.devopsHits.slice(0, 3).join(', ')}`;
+    const firstChild = card.querySelector('a, div');
+    if (firstChild) firstChild.parentNode.insertBefore(badge, firstChild);
+  }
+
+  function scanJobCards() {
+    if (!isJobsPage()) return;
+
+    const cards = document.querySelectorAll(
+      'li.jobs-search-results__list-item, li[data-occludable-job-id], div.job-card-container, .scaffold-layout__list-container li'
+    );
+
+    cards.forEach(card => {
+      if (card.getAttribute(JOBS_MARK_ATTR)) return;
+      card.setAttribute(JOBS_MARK_ATTR, 'seen');
+
+      const cardText = getJobCardText(card);
+      if (!cardText || cardText.length < 10) return;
+
+      const url = getJobCardUrl(card);
+      if (url && seenJobs.has(url)) return;
+      if (url) seenJobs.add(url);
+
+      const info = classifyV2(cardText, card);
+      if (!info.match) return;
+
+      decorateJobCard(card, info, url);
+      dbg('[Jobs] card match:', cardText.substring(0, 80));
+
+      // When user clicks the card, grab full job description from the detail panel
+      card.addEventListener('click', () => {
+        setTimeout(() => {
+          const detailText = getJobDetailText() || cardText;
+          if (card.getAttribute(JOBS_MARK_ATTR) !== 'saved') {
+            card.setAttribute(JOBS_MARK_ATTR, 'saved');
+            saveJobMatch(url, detailText, cardText, info);
+          }
+        }, 1200);
+      }, { once: true });
+
+      // Auto-save if already viewed (detail panel matches current job)
+      const activeJobId = url?.match(/\/jobs\/view\/(\d+)/)?.[1];
+      const detailJobId = document.querySelector('[data-job-id]')?.getAttribute('data-job-id') ||
+        document.querySelector('.jobs-unified-top-card__job-title')?.closest('[data-job-id]')?.getAttribute('data-job-id');
+      if (activeJobId && activeJobId === detailJobId) {
+        const detailText = getJobDetailText() || cardText;
+        card.setAttribute(JOBS_MARK_ATTR, 'saved');
+        saveJobMatch(url, detailText, cardText, info);
+      }
+    });
+  }
 
   init();
 })();

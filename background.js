@@ -105,6 +105,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'syncMatchToNotion') {
     const toNotionStatus = (s) => {
       if (!s || s === 'new' || s === 'interested') return 'Not started';
+      if (s === 'ai_processed') return 'AI Processed';
       if (s === 'applied' || s === 'interviewing') return 'In progress';
       return 'Done'; // offer, rejected, not-interested
     };
@@ -117,9 +118,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         ? new Date(match.timestamp).toISOString().split('T')[0]
         : new Date().toISOString().split('T')[0];
 
-      const richText = (str) => {
+      const richText = (val) => {
+        if (val == null || val === false) return [];
+        const str = typeof val === 'string' ? val : String(val);
         if (!str) return [];
-        // Notion rich_text items max 2000 chars each; split into chunks
         const chunks = [];
         for (let i = 0; i < str.length; i += 2000) {
           chunks.push({ text: { content: str.substring(i, i + 2000) } });
@@ -290,6 +292,50 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
+// ---- Atomic saveMatch (prevents multi-tab race on devopsSavedMatches) -------
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === 'saveMatch') {
+    chrome.storage.local.get(['devopsSavedMatches'], (result) => {
+      const matches = result.devopsSavedMatches || [];
+      const match = message.match;
+      if (match.url && matches.some(m => m.url === match.url)) {
+        sendResponse({ duplicate: true });
+        return;
+      }
+      matches.unshift(match);
+      if (matches.length > 500) matches.length = 500;
+      chrome.storage.local.set({ devopsSavedMatches: matches }, () => {
+        if (chrome.runtime.lastError) {
+          sendResponse({ error: chrome.runtime.lastError.message });
+        } else {
+          sendResponse({ saved: true });
+        }
+      });
+    });
+    return true;
+  }
+});
+
+// ---- Atomic updateMatchStatus (prevents multi-tab race on status writes) ----
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === 'updateMatchStatus') {
+    chrome.storage.local.get(['devopsSavedMatches'], (result) => {
+      const matches = result.devopsSavedMatches || [];
+      const m = matches.find(entry =>
+        (message.matchId && entry.id === message.matchId) ||
+        (message.url && entry.url === message.url) ||
+        (message.snippetPrefix && entry.snippet && entry.snippet.startsWith(message.snippetPrefix))
+      );
+      if (!m) { sendResponse({ error: 'not found' }); return; }
+      m.status = message.status;
+      chrome.storage.local.set({ devopsSavedMatches: matches }, () => {
+        sendResponse({ success: true });
+      });
+    });
+    return true;
+  }
+});
+
 // ---- Store AI analysis back into the saved match ----------------------------
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'storeAIAnalysis') {
@@ -301,6 +347,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       match.aiAnalyzedAt = Date.now();
       if (message.timeToProcess !== undefined) match.aiTimeToProcess = message.timeToProcess;
       if (message.model) match.aiModel = message.model;
+      if (!match.status || match.status === 'new') match.status = 'ai_processed';
       if (message.tokens !== undefined) match.aiTokens = message.tokens;
       chrome.storage.local.set({ devopsSavedMatches: matches }, () => {
         sendResponse({ success: true });

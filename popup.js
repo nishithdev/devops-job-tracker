@@ -135,7 +135,7 @@ function updateRecentMatches(matches) {
     const badgeClass = match.isHiring ? 'match-badge-hiring' : 'match-badge-devops';
     
     return `
-      <div class="match-card" data-url="${match.url || ''}" onclick="openMatchUrl(this)">
+      <div class="match-card" data-url="${match.url || ''}" data-action="open-match">
         <div class="match-card-header">
           <span class="match-badge ${badgeClass}">${badgeEmoji}</span>
           <span class="match-author">${escapeHtml(match.author || 'Unknown')}</span>
@@ -152,13 +152,15 @@ function updateRecentMatches(matches) {
   }).join('');
 }
 
-// Open match URL in new tab
-window.openMatchUrl = function(element) {
-  const url = element.getAttribute('data-url');
+// Open match URL in new tab — delegated listener (CSP-safe, no inline handlers)
+document.addEventListener('click', (e) => {
+  const card = e.target.closest('[data-action="open-match"]');
+  if (!card) return;
+  const url = card.getAttribute('data-url');
   if (url && url !== 'null' && url !== 'undefined') {
-    chrome.tabs.create({ url: url });
+    chrome.tabs.create({ url });
   }
-};
+});
 
 // Toggle auto-scroll
 function toggleAutoScroll() {

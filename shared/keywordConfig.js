@@ -217,9 +217,14 @@ const DEFAULT_INVALID_KEYWORDS = [
   "available on bench",
   "candidates on the bench",
   "don't send resumes",
-  "not for bench sales",
+  "not for bench",
   "available c2c consultants",
   "market your profile",
+  "benchsales recruiters",
+  "consutalnts ready",
+  "have skilled consultants ready ",
+  "have skilled professionals",
+  "available consultants",
 
   // Training / courses / bootcamps
   "bootcamp",
