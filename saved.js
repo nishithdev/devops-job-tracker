@@ -207,7 +207,6 @@ function updateBulkActions() {
 
 function renderAICells(match) {
   const ai = match.aiAnalysis;
-  const expColor = { junior: '#1565c0', mid: '#2e7d32', senior: '#6a1b9a', lead: '#e65100', any: '#546e7a' };
   const pill = (val, color) => val
     ? `<span style="background:${color}22;color:${color};border:1px solid ${color}44;border-radius:8px;padding:2px 7px;font-size:11px;font-weight:600;white-space:nowrap;">${escapeHtml(val)}</span>`
     : '<span style="color:#bbb;font-size:11px;">—</span>';
@@ -224,14 +223,19 @@ function renderAICells(match) {
     const pending = match.aiAnalyzedAt === undefined
       ? '<span style="color:#bbb;font-size:11px;">pending</span>'
       : '<span style="color:#bbb;font-size:11px;">—</span>';
-    return `<td>${pending}</td><td>—</td><td>—</td>`;
+    return `<td>${pending}</td><td>—</td>`;
+  }
+  if (ai._error === 'context_too_long') {
+    return `<td colspan="2" style="color:#e65100;font-size:11px;font-style:italic;">Unable to process — post too long</td>`;
   }
 
-  const jobTitle = ai.jobTitle ? `<span style="font-size:12px;font-weight:600;">${escapeHtml(ai.jobTitle)}</span>` : '—';
-  const exp      = pill(ai.experienceLevel, expColor[ai.experienceLevel] || '#546e7a');
-  const visa     = pill(ai.visaSponsorship, visaColorFor(ai.visaSponsorship));
+  const titles = Array.isArray(ai.jobTitles) ? ai.jobTitles.filter(Boolean) : (ai.jobTitle ? [ai.jobTitle] : []);
+  const jobTitle = titles.length
+    ? titles.map(t => `<span style="font-size:12px;font-weight:600;display:block;">${escapeHtml(t)}</span>`).join('')
+    : '—';
+  const visa     = ai.visaSponsorship ? pill(ai.visaSponsorship, visaColorFor(ai.visaSponsorship)) : pill('NA', '#757575');
 
-  return `<td style="min-width:120px;">${jobTitle}</td><td>${exp}</td><td>${visa}</td>`;
+  return `<td style="min-width:120px;">${jobTitle}</td><td>${visa}</td>`;
 }
 
 function renderMatches() {
@@ -468,7 +472,6 @@ function renderMatches() {
           <th class="sortable${sortColumn === 'keyword' ? (sortDirection === 'asc' ? ' sorted-asc' : ' sorted-desc') : ''}" data-column="keyword">Keywords</th>
           <th class="sortable${sortColumn === 'status' ? (sortDirection === 'asc' ? ' sorted-asc' : ' sorted-desc') : ''}" data-column="status">Status</th>
           <th>AI Role</th>
-          <th>Exp</th>
           <th>VISA</th>
           <th>Skills</th>
           <th>Source URL</th>

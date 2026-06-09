@@ -281,12 +281,26 @@ document.getElementById('btn-bulk-process').addEventListener('click', async () =
   const startBtn    = document.getElementById('btn-bulk-process');
   const stopBtn     = document.getElementById('btn-bulk-stop');
 
+  const logEl = document.getElementById('bulk-log');
+  const logLine = (msg, type = 'info') => {
+    const colors = { info: '#9cdcfe', warn: '#dcdcaa', error: '#f48771', ok: '#4ec994' };
+    const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+    const line = document.createElement('div');
+    line.style.color = colors[type] || '#d4d4d4';
+    line.textContent = `[${time}] ${msg}`;
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+
   bulkStopped = false;
   startBtn.disabled = true;
   stopBtn.disabled = false;
   stopBtn.style.opacity = '1';
   progressEl.style.display = '';
+  logEl.style.display = '';
+  logEl.innerHTML = '';
   textEl.textContent = 'Fetching matches from Notion…';
+  logLine('Starting bulk AI processing…');
 
   // Pull all pages from Notion and merge any that aren't in local storage
   const credsResult = await new Promise(r => chrome.storage.local.get(['notionToken', 'notionDatabaseId', 'devopsSavedMatches'], r));
@@ -323,8 +337,25 @@ document.getElementById('btn-bulk-process').addEventListener('click', async () =
           const props = page.properties || {};
           const notionPageId = page.id;
 
-          // Already in local storage — nothing to import
-          if (localMatches.find(m => m.notionPageId === notionPageId)) continue;
+          // Already in local storage — sync Notion AI state back to local
+          const existing = localMatches.find(m => m.notionPageId === notionPageId);
+          if (existing) {
+            const notionJobTitle    = (props['Job Title']?.rich_text   || []).map(b => b.plain_text || '').join('').trim();
+            const notionVisa        = (props['VISA']?.rich_text         || []).map(b => b.plain_text || '').join('').trim();
+            const notionConfidence  = props['AI Confidence']?.number;
+            const missingFields = [
+              !notionJobTitle   && 'Job Title',
+              !notionVisa       && 'VISA',
+              notionConfidence == null && 'AI Confidence',
+            ].filter(Boolean);
+            if (missingFields.length) {
+              delete existing.aiAnalysis;
+              existing._missingFields = missingFields;
+            } else {
+              delete existing._missingFields;
+            }
+            continue;
+          }
 
           const snippetBlocks = props.Snippet?.rich_text || [];
           const fullText = snippetBlocks.map(b => b.plain_text || b.text?.content || '').join('');
@@ -357,35 +388,56 @@ document.getElementById('btn-bulk-process').addEventListener('click', async () =
       await new Promise(r => chrome.storage.local.set({ devopsSavedMatches: localMatches }, r));
     } catch (e) {
       console.warn('[BulkProcess] Notion fetch failed:', e.message);
+      logLine(`Notion fetch error: ${e.message}`, 'error');
     }
   }
 
-  const AI_FIELDS = ['jobTitle', 'experienceLevel', 'visaSponsorship'];
-  const needsAnalysis = (m) => !m.aiAnalysis || AI_FIELDS.some(f => m.aiAnalysis[f] == null || m.aiAnalysis[f] === '');
+  const needsAnalysis = (m) => !m.aiAnalysis || (!m.aiAnalysis._error && !m.aiAnalysis.jobTitles?.length && !m.aiAnalysis.jobTitle) || (m._missingFields && m._missingFields.length > 0);
 
   const matches = localMatches;
-  // Skip matches deleted in Notion
-  const pending = matches.filter(m => !m.notionDeleted && needsAnalysis(m));
+  const deleted  = matches.filter(m => m.notionDeleted).length;
+  const analyzed = matches.filter(m => !m.notionDeleted && !needsAnalysis(m)).length;
+  const pending  = matches.filter(m => !m.notionDeleted && needsAnalysis(m));
+
+  logLine(`Total: ${matches.length} matches — ${analyzed} analyzed, ${pending.length} pending, ${deleted} deleted/archived`, 'info');
+
+  // Break down pending by which fields are missing
+  const fieldCounts = {};
+  for (const m of pending) {
+    const fields = m._missingFields || ['Job Title', 'VISA', 'AI Confidence'];
+    for (const f of fields) fieldCounts[f] = (fieldCounts[f] || 0) + 1;
+  }
+  if (pending.length > 0) {
+    logLine(`Missing field breakdown: ${Object.entries(fieldCounts).map(([f, c]) => `${f} (${c})`).join(', ')}`, 'info');
+  }
 
   if (pending.length === 0) {
     textEl.textContent = '✅ All matches already analyzed.';
     barEl.style.width = '100%';
+    logLine('Nothing to process.', 'ok');
     startBtn.disabled = false;
     stopBtn.disabled = true;
     stopBtn.style.opacity = '0.5';
     return;
   }
 
+  logLine(`Starting processing of ${pending.length} match${pending.length !== 1 ? 'es' : ''}…`, 'info');
   let done = 0;
   let errors = 0;
 
   for (const match of pending) {
-    if (bulkStopped) break;
+    if (bulkStopped) { logLine('Stopped by user.', 'warn'); break; }
 
-    textEl.textContent = `Processing ${done + 1} / ${pending.length} — "${match.author || 'Unknown'}"…`;
+    const label = match.author || match.id;
+    const missing = match._missingFields && match._missingFields.length ? match._missingFields : null;
+    textEl.textContent = `Processing ${done + 1} / ${pending.length} — "${label}"…`;
+    logLine(`[${done + 1}/${pending.length}] "${label}" — missing: ${missing ? missing.join(', ') : 'all AI fields'}`, 'warn');
 
     const text = match.fullText || match.snippet || '';
-    if (!text) { done++; continue; }
+    if (!text) {
+      logLine(`  Skipped — no post text available.`, 'warn');
+      done++; continue;
+    }
 
     // AI analysis
     const aiResp = await new Promise(r =>
@@ -395,18 +447,31 @@ document.getElementById('btn-bulk-process').addEventListener('click', async () =
     if (aiResp && aiResp.success) {
       // Store AI result and wait for it to flush
       await new Promise(r =>
-        chrome.runtime.sendMessage({ action: 'storeAIAnalysis', matchId: match.id, analysis: aiResp.analysis, timeToProcess: aiResp.timeToProcess, model: aiResp.model }, r)
+        chrome.runtime.sendMessage({ action: 'storeAIAnalysis', matchId: match.id, analysis: aiResp.analysis, timeToProcess: aiResp.timeToProcess, model: aiResp.model, tokens: aiResp.tokens }, r)
       );
       // Re-read from storage so notionPageId is included, then PATCH the existing Notion page
       const fresh = await new Promise(r => chrome.storage.local.get(['devopsSavedMatches'], r));
       const freshMatch = (fresh.devopsSavedMatches || []).find(m => m.id === match.id);
       if (freshMatch) {
-        await new Promise(r =>
+        const syncResp = await new Promise(r =>
           chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match: freshMatch }, r)
         );
+        if (syncResp && syncResp.error) {
+          logLine(`[${done + 1}/${pending.length}] Notion sync error for "${label}": ${syncResp.error}`, 'error');
+          errors++;
+        } else {
+          logLine(`[${done + 1}/${pending.length}] OK "${label}" — ${aiResp.tokens ?? '?'} tokens, ${aiResp.timeToProcess ?? '?'}ms`, 'ok');
+        }
       }
     } else {
-      errors++;
+      const errMsg = (aiResp && aiResp.error) || 'no response';
+      if (aiResp && aiResp.error === 'context_too_long') {
+        await new Promise(r => chrome.runtime.sendMessage({ action: 'storeAIAnalysis', matchId: match.id, analysis: { _error: 'context_too_long' } }, r));
+        logLine(`[${done + 1}/${pending.length}] Skipped "${label}" — context too long for model.`, 'warn');
+      } else {
+        logLine(`[${done + 1}/${pending.length}] AI error for "${label}": ${errMsg}`, 'error');
+        errors++;
+      }
     }
 
     done++;
@@ -415,6 +480,7 @@ document.getElementById('btn-bulk-process').addEventListener('click', async () =
 
   const stopped = bulkStopped ? ' (stopped early)' : '';
   textEl.textContent = `✅ Done — ${done} processed, ${errors} errors${stopped}.`;
+  logLine(`Finished: ${done} processed, ${errors} error${errors !== 1 ? 's' : ''}${stopped}.`, errors > 0 ? 'warn' : 'ok');
   startBtn.disabled = false;
   stopBtn.disabled = true;
   stopBtn.style.opacity = '0.5';

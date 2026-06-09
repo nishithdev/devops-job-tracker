@@ -131,18 +131,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         Name: {
           title: [{ text: { content: match.author || 'Unknown Recruiter' } }],
         },
-        Keywords: {
-          rich_text: richText((match.devopsKeywords || []).join(', ')),
-        },
+        ...((match.devopsKeywords || []).length > 0 && { Keywords: { rich_text: richText(match.devopsKeywords.join(', ')) } }),
         Score: {
           number: match.relevanceScore ?? 0,
         },
         Status: {
           status: { name: toNotionStatus(match.status) },
         },
-        Emails: {
-          rich_text: richText((match.emails || []).join(', ')),
-        },
+        ...((match.emails || []).length > 0 && { Emails: { rich_text: richText(match.emails.join(', ')) } }),
         Date: {
           date: { start: dateStr },
         },
@@ -156,13 +152,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // AI-extracted fields (optional — only present if Ollama ran successfully)
       const ai = match.aiAnalysis;
       if (ai) {
-        if (ai.jobTitle)          properties['Job Title']        = { rich_text: richText(ai.jobTitle) };
-        if (ai.experienceLevel)   properties['Experience Level'] = { rich_text: richText(ai.experienceLevel) };
-        if (ai.visaSponsorship)   properties['VISA']             = { rich_text: richText(ai.visaSponsorship) };
+        const titles = Array.isArray(ai.jobTitles) ? ai.jobTitles.filter(Boolean) : (ai.jobTitle ? [ai.jobTitle] : []);
+        if (titles.length) properties['Job Title'] = { rich_text: richText(titles.join(', ')) };
+        properties['VISA'] = { rich_text: richText(ai.visaSponsorship || 'Not mentioned') };
         if (ai.confidence !== undefined) properties['AI Confidence'] = { number: ai.confidence };
       }
       if (match.aiTimeToProcess !== undefined) properties['AI Time (ms)'] = { number: match.aiTimeToProcess };
       if (match.aiModel) properties['AI Model'] = { rich_text: richText(match.aiModel) };
+      if (match.aiTokens !== undefined) properties['Tokens'] = { number: match.aiTokens };
 
       const saveNotionStatus = (entry) =>
         chrome.storage.local.set({ notionLastSync: entry });
@@ -230,7 +227,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // ---- Local AI analysis via Ollama -------------------------------------------
 // Calls a local Ollama instance to extract structured fields from a post.
-// Returns: { jobTitle, experienceLevel, visaSponsorship, confidence }
+// Returns: { jobTitles, visaSponsorship, confidence }
 
 const AI_PROMPT = (text) => [
   'You are a job post analyzer. Analyze the following LinkedIn post and extract structured information.',
@@ -239,11 +236,11 @@ const AI_PROMPT = (text) => [
   text.substring(0, 1500),
   'JSON schema to fill:',
   '{',
-  '  "jobTitle": "exact role title or null",',
-  '  "experienceLevel": "junior | mid | senior | lead | any | null",',
+  '  "jobTitles": ["role1", "role2"] or null,',
   '  "visaSponsorship": "short summary or null",',
   '  "confidence": 0-100',
   '}',
+  'For jobTitles: Extract all distinct roles being hired for as an array. If only one role, return a single-element array. If none found, return null.',
   'For visaSponsorship: Extract exactly what visa statuses are mentioned.',
   'Examples: H1B sponsored, No H1B, GC/Citizen only, OPT/CPT accepted, No sponsorship, H1B transfer ok, GC EAD accepted.',
   'If nothing is mentioned return null.',
@@ -267,12 +264,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }),
       })
         .then(async r => {
-          if (!r.ok) { sendResponse({ error: `Ollama ${r.status}` }); return; }
-          const data = await r.json();
+          const rawText = await r.text();
+          if (!r.ok) {
+            const isContextErr = /context|too long|exceeds/i.test(rawText);
+            sendResponse({ error: isContextErr ? 'context_too_long' : `Ollama ${r.status}` });
+            return;
+          }
+          const data = JSON.parse(rawText);
           const timeToProcess = Date.now() - startTime;
+          const tokens = (data.prompt_eval_count || 0) + (data.eval_count || 0);
+          if (!data.response) {
+            sendResponse({ error: 'context_too_long' });
+            return;
+          }
           try {
             const parsed = JSON.parse(data.response);
-            sendResponse({ success: true, analysis: parsed, timeToProcess, model });
+            sendResponse({ success: true, analysis: parsed, timeToProcess, model, tokens });
           } catch (_) {
             sendResponse({ error: 'AI returned invalid JSON', raw: data.response });
           }
@@ -294,6 +301,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       match.aiAnalyzedAt = Date.now();
       if (message.timeToProcess !== undefined) match.aiTimeToProcess = message.timeToProcess;
       if (message.model) match.aiModel = message.model;
+      if (message.tokens !== undefined) match.aiTokens = message.tokens;
       chrome.storage.local.set({ devopsSavedMatches: matches }, () => {
         sendResponse({ success: true });
       });

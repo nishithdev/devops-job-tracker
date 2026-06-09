@@ -1325,6 +1325,9 @@ try {
             chrome.runtime.sendMessage({ action: 'analyzeWithAI', text }, (aiResp) => {
               if (chrome.runtime.lastError || !aiResp || !aiResp.success) {
                 dbg('AI analyze skipped:', aiResp && aiResp.error);
+                if (aiResp && aiResp.error === 'context_too_long') {
+                  chrome.runtime.sendMessage({ action: 'storeAIAnalysis', matchId: match.id, analysis: { _error: 'context_too_long' } });
+                }
                 return;
               }
               dbg('AI analysis:', JSON.stringify(aiResp.analysis));
@@ -1336,6 +1339,7 @@ try {
                 analysis: aiResp.analysis,
                 timeToProcess: aiResp.timeToProcess,
                 model: aiResp.model,
+                tokens: aiResp.tokens,
               }, () => {
                 // Re-read to get notionPageId that was stored during Step 1
                 chrome.storage.local.get(['devopsSavedMatches'], (res) => {
