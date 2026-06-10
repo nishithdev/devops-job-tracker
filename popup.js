@@ -185,15 +185,16 @@ function toggleAutoScroll() {
 // Clear all matches
 function clearAllMatches() {
   if (confirm('Are you sure you want to clear all saved matches? This cannot be undone.')) {
-    safeStorageSet({
-      devopsSavedMatches: [],
-      devopsScanCount: 0
-    }).then(() => {
-      updateStats();
-      alert('All matches cleared successfully!');
-    }).catch((error) => {
-      console.error('Failed to clear matches:', error);
-      alert('Failed to clear matches. Please try again.');
+    chrome.runtime.sendMessage({ action: 'deleteMatches', clearAll: true }, (response) => {
+      if (chrome.runtime.lastError || !response || response.error) {
+        console.error('Failed to clear matches:', chrome.runtime.lastError || response);
+        alert('Failed to clear matches. Please try again.');
+        return;
+      }
+      safeStorageSet({ devopsScanCount: 0 }).then(() => {
+        updateStats();
+        alert('All matches cleared successfully!');
+      });
     });
   }
 }

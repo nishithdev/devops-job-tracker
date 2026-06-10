@@ -608,17 +608,18 @@ function deleteMatch(id) {
   }
   
   if (!confirm('Delete this match? This cannot be undone.')) return;
-  
-  allMatches = allMatches.filter(m => m.id !== id);
-  selectedRows.delete(id);
-  
-  safeStorageSet({ devopsSavedMatches: allMatches }).then(() => {
+
+  chrome.runtime.sendMessage({ action: 'deleteMatches', ids: [id] }, (response) => {
+    if (chrome.runtime.lastError || !response || response.error) {
+      console.error('Delete error:', chrome.runtime.lastError || response);
+      extensionContextValid = false;
+      showContextInvalidError();
+      return;
+    }
+    allMatches = allMatches.filter(m => m.id !== id);
+    selectedRows.delete(id);
     updateStats();
     applyFilters();
-  }).catch((error) => {
-    console.error('Delete error:', error);
-    extensionContextValid = false;
-    showContextInvalidError();
   });
 }
 
@@ -637,15 +638,17 @@ function updateMatchStatus(id, newStatus) {
   }
   
   match.status = newStatus;
-  
-  safeStorageSet({ devopsSavedMatches: allMatches }).then(() => {
+
+  chrome.runtime.sendMessage({ action: 'updateMatchStatus', matchId: id, status: newStatus }, (response) => {
+    if (chrome.runtime.lastError || !response || response.error) {
+      console.error('Update status error:', chrome.runtime.lastError || response);
+      extensionContextValid = false;
+      showContextInvalidError();
+      return;
+    }
     console.log(`Updated match ${id} status to: ${newStatus}`);
     // Re-render to update the status badge
     renderMatches();
-  }).catch((error) => {
-    console.error('Update status error:', error);
-    extensionContextValid = false;
-    showContextInvalidError();
   });
 }
 
@@ -668,20 +671,18 @@ function cleanDuplicates() {
     return;
   }
   
-  // Filter out matches that have duplicateOf field
-  allMatches = allMatches.filter(m => !m.duplicateOf);
-  
-  // Clear any selected duplicates
-  duplicates.forEach(dup => selectedRows.delete(dup.id));
-  
-  safeStorageSet({ devopsSavedMatches: allMatches }).then(() => {
+  chrome.runtime.sendMessage({ action: 'deleteMatches', ids: duplicates.map(d => d.id) }, (response) => {
+    if (chrome.runtime.lastError || !response || response.error) {
+      console.error('Clean duplicates error:', chrome.runtime.lastError || response);
+      extensionContextValid = false;
+      showContextInvalidError();
+      return;
+    }
+    allMatches = allMatches.filter(m => !m.duplicateOf);
+    duplicates.forEach(dup => selectedRows.delete(dup.id));
     alert(`Removed ${count} duplicate${count > 1 ? 's' : ''}!`);
     updateStats();
     applyFilters();
-  }).catch((error) => {
-    console.error('Clean duplicates error:', error);
-    extensionContextValid = false;
-    showContextInvalidError();
   });
 }
 
@@ -696,17 +697,18 @@ function deleteSelected() {
   if (count === 0) return;
   
   if (!confirm(`Delete ${count} selected match${count > 1 ? 'es' : ''}? This cannot be undone.`)) return;
-  
-  allMatches = allMatches.filter(m => !selectedRows.has(m.id));
-  selectedRows.clear();
-  
-  safeStorageSet({ devopsSavedMatches: allMatches }).then(() => {
+
+  chrome.runtime.sendMessage({ action: 'deleteMatches', ids: [...selectedRows] }, (response) => {
+    if (chrome.runtime.lastError || !response || response.error) {
+      console.error('Delete selected error:', chrome.runtime.lastError || response);
+      extensionContextValid = false;
+      showContextInvalidError();
+      return;
+    }
+    allMatches = allMatches.filter(m => !selectedRows.has(m.id));
+    selectedRows.clear();
     updateStats();
     applyFilters();
-  }).catch((error) => {
-    console.error('Delete selected error:', error);
-    extensionContextValid = false;
-    showContextInvalidError();
   });
 }
 
@@ -742,15 +744,17 @@ function clearAllMatches() {
   
   const count = allMatches.length;
   if (!confirm(`Delete all ${count} saved matches? This cannot be undone.`)) return;
-  
-  safeStorageSet({ devopsSavedMatches: [] }).then(() => {
+
+  chrome.runtime.sendMessage({ action: 'deleteMatches', clearAll: true }, (response) => {
+    if (chrome.runtime.lastError || !response || response.error) {
+      console.error('Clear all error:', chrome.runtime.lastError || response);
+      extensionContextValid = false;
+      showContextInvalidError();
+      return;
+    }
     allMatches = [];
     updateStats();
     applyFilters();
-  }).catch((error) => {
-    console.error('Clear all error:', error);
-    extensionContextValid = false;
-    showContextInvalidError();
   });
 }
 

@@ -508,6 +508,7 @@ document.getElementById('btn-save-notion').addEventListener('click', () => {
     status.textContent = (token && dbId) ? '✅ Notion credentials saved.' : '🗑️ Notion credentials cleared.';
     status.style.color = '#2e7d32';
     setTimeout(() => { status.textContent = ''; }, 3000);
+    if (token && dbId) chrome.runtime.sendMessage({ action: 'syncNow' });
   });
 });
 

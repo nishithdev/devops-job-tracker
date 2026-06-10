@@ -25,7 +25,25 @@ flowchart TD
 
     K([Settings — Bulk Process]) -->|for each unanalyzed match| G
     L([Stale Check — 24h cron]) -->|HEAD each saved URL| D
+
+    F -->|Pull Sync — 10 min cron\nlast-write-wins merge| D
+    D -->|failed writes| M[notionOutbox\nretry queue w/ backoff]
+    M -->|drain — 5 min cron| F
+    N[chrome.storage.sync\nsettings mirror] <-->|Notion creds, Ollama,\nkeywords| O([Other devices])
 ```
+
+---
+
+## Multi-Device Sync
+
+The Notion database is the durable source of truth, so you can run the extension on several devices/browsers at once:
+
+- **Push**: every save, status change, and AI result is written to Notion with a `Updated At` timestamp. Failed writes (offline, rate limit) go to a persistent outbox and retry with backoff — nothing is dropped.
+- **Pull**: every 10 minutes (and on browser startup) each device pulls the database and merges per-match with last-write-wins. Matches saved on another device are imported automatically.
+- **Deletes**: deleting a match archives its Notion page. Other devices see the archived page and flag their local copy as `notionDeleted` — local data is never destroyed by a remote delete.
+- **Settings**: Notion credentials, Ollama config, and custom keywords mirror across devices via `chrome.storage.sync`. Configure once, sign into Chrome elsewhere, and the new device starts syncing on its own.
+
+Three sync properties (`Match ID`, `Local Status`, `Updated At`) are added to your Notion database automatically on first sync.
 
 ---
 
@@ -95,6 +113,8 @@ Create a Notion database with these properties (exact names and types):
 | Experience Level | Text |
 | VISA | Text |
 | AI Confidence | Number |
+
+Three more properties (`Match ID` — Text, `Local Status` — Text, `Updated At` — Number) are created automatically by the extension on first sync; you don't need to add them.
 
 ### 3. Share the Database with Your Integration
 - Open the database in Notion

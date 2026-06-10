@@ -617,14 +617,23 @@ try {
   }
 
   function getPostUrl(postEl) {
-    let urn = postEl.getAttribute("data-urn");
-    if (!urn) {
-      const inner = postEl.querySelector("[data-urn*=':activity:']");
-      if (inner) urn = inner.getAttribute("data-urn");
-    }
-    if (urn && urn.includes(":activity:")) {
-      const id = urn.split(":activity:")[1];
-      return `https://www.linkedin.com/feed/update/urn:li:activity:${id}/`;
+    // The URN can live on the post root, a descendant, or (new feed layout)
+    // an ancestor scaffold wrapper — and in data-id rather than data-urn.
+    const URN_SEL = "[data-urn*=':activity:'], [data-urn*=':ugcPost:'], [data-urn*=':share:']";
+    const ID_SEL  = "[data-id*=':activity:'], [data-id*=':ugcPost:'], [data-id*=':share:']";
+    const urnSources = [
+      postEl.getAttribute("data-urn"),
+      postEl.getAttribute("data-id"),
+      postEl.querySelector(URN_SEL)?.getAttribute("data-urn"),
+      postEl.querySelector(ID_SEL)?.getAttribute("data-id"),
+      postEl.closest(URN_SEL)?.getAttribute("data-urn"),
+      postEl.closest(ID_SEL)?.getAttribute("data-id"),
+    ];
+    for (const urn of urnSources) {
+      if (!urn) continue;
+      // Also handles aggregate URNs: urn:li:aggregate:(urn:li:activity:123,…)
+      const m = urn.match(/urn:li:(activity|ugcPost|share):(\d+)/);
+      if (m) return `https://www.linkedin.com/feed/update/urn:li:${m[1]}:${m[2]}/`;
     }
     // Fallback: look for a permalink anchor inside the post.
     // New feed layout uses various link patterns, try them all.
