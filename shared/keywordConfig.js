@@ -153,6 +153,7 @@ const DEFAULT_DEVOPS_KEYWORDS = [
 
 // Hiring signals - stronger match if present
 const DEFAULT_HIRING_SIGNALS = [
+  // Standard hiring language
   "hiring",
   "we're hiring",
   "we are hiring",
@@ -175,6 +176,50 @@ const DEFAULT_HIRING_SIGNALS = [
   "career opportunity",
   "we're recruiting",
   "we are recruiting",
+
+  // Staffing / agency language — these post patterns look very different from
+  // standard company posts but are high-value contract/C2C opportunities
+  "requirement",
+  "hot requirement",
+  "urgent requirement",
+  "immediate requirement",
+  "client requirement",
+  "our client is looking",
+  "our client is hiring",
+  "our client needs",
+  "client is looking",
+  "end client",
+  "urgently needed",
+  "urgent need",
+  "urgent hiring",
+  "hot req",
+  "immediate req",
+  "immediate joining",
+  "immediate start",
+  "positions available",
+  "position available",
+  "roles available",
+  "role available",
+  "resource needed",
+  "resources needed",
+  "talent needed",
+  "seeking candidates",
+  "candidates needed",
+  "interested candidates",
+  "eligible candidates",
+  "please refer",
+  "please share",
+  "refer someone",
+  "know someone",
+  "drop your cv",
+  "share your cv",
+  "drop your resume",
+  "share your resume",
+  "send cv",
+  "send resume",
+  "dm me",
+  "dm your",
+  "inbox me",
 ];
 
 // Invalid keywords — posts that contain ANY of these are shown as "⚠️ Not valid"

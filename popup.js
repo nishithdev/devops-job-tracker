@@ -26,30 +26,61 @@ function updateStatus(status) {
   }
 }
 
+function timeAgo(ts) {
+  if (!ts) return null;
+  const s = Math.round((Date.now() - ts) / 1000);
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  return `${Math.round(s / 3600)}h ago`;
+}
+
 function updateNotionStatus() {
-  safeStorageGet(['notionToken', 'notionDatabaseId', 'notionLastSync']).then((res) => {
+  safeStorageGet(['notionToken', 'notionDatabaseId', 'notionLastSync', 'notionLastPull', 'notionOutbox']).then((res) => {
     const section = document.getElementById('notion-sync-section');
     const el = document.getElementById('notion-sync-status');
-    if (!res.notionToken || !res.notionDatabaseId) return; // not configured — keep hidden
+    if (!res.notionToken || !res.notionDatabaseId) return;
     section.style.display = '';
 
-    const last = res.notionLastSync;
-    if (!last) {
-      el.innerHTML = '<span style="color:#757575;">No syncs yet — waiting for first match.</span>';
-      return;
-    }
-    const ago = Math.round((Date.now() - last.ts) / 1000);
-    const agoStr = ago < 60 ? `${ago}s ago` : ago < 3600 ? `${Math.round(ago/60)}m ago` : `${Math.round(ago/3600)}h ago`;
-    if (last.ok) {
-      el.innerHTML = `<span style="color:#2e7d32;">✅ Last sync: ${agoStr}</span>`;
+    const push = res.notionLastSync;
+    const pull = res.notionLastPull;
+    const outbox = res.notionOutbox || [];
+    const pending = outbox.filter(o => (o.nextAt || 0) <= Date.now()).length;
+    const retrying = outbox.length - pending;
+
+    const lines = [];
+
+    if (!push && !pull) {
+      lines.push('<span style="color:#757575;">No syncs yet — waiting for first match.</span>');
     } else {
-      const errText = last.error || 'Unknown error';
-      el.innerHTML = `
-        <span class="notion-error-trigger" style="color:#c62828;cursor:default;position:relative;display:inline-block;">
-          ❌ Last sync failed (${agoStr}) — hover for details
-          <span class="notion-error-tooltip">${errText}</span>
-        </span>`;
+      if (push) {
+        const agoStr = timeAgo(push.ts);
+        if (push.ok) {
+          lines.push(`<span style="color:#2e7d32;">↑ Push: ${agoStr}</span>`);
+        } else {
+          const err = escapeHtml(push.error || 'Unknown error');
+          lines.push(`<span class="notion-error-trigger" style="color:#c62828;cursor:default;position:relative;display:inline-block;">↑ Push failed (${agoStr}) — hover<span class="notion-error-tooltip">${err}</span></span>`);
+        }
+      }
+      if (pull) {
+        const agoStr = timeAgo(pull.ts);
+        if (pull.ok) {
+          const detail = (pull.imported || pull.updated) ? ` · ${pull.imported || 0} new, ${pull.updated || 0} updated` : '';
+          lines.push(`<span style="color:#1565c0;">↓ Pull: ${agoStr}${detail}</span>`);
+        } else {
+          const err = escapeHtml(pull.error || 'Unknown error');
+          lines.push(`<span class="notion-error-trigger" style="color:#c62828;cursor:default;position:relative;display:inline-block;">↓ Pull failed (${agoStr}) — hover<span class="notion-error-tooltip">${err}</span></span>`);
+        }
+      }
     }
+
+    if (outbox.length > 0) {
+      const queueStr = pending > 0
+        ? `<span style="color:#e65100;">⏳ ${pending} write${pending !== 1 ? 's' : ''} queued${retrying > 0 ? `, ${retrying} retrying` : ''}</span>`
+        : `<span style="color:#757575;">${retrying} write${retrying !== 1 ? 's' : ''} retrying…</span>`;
+      lines.push(queueStr);
+    }
+
+    el.innerHTML = lines.join('<br>');
   });
 }
 
@@ -207,6 +238,9 @@ document.getElementById('clear-matches')?.addEventListener('click', clearAllMatc
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local') {
     updateStats();
+    if ('notionLastSync' in changes || 'notionLastPull' in changes || 'notionOutbox' in changes) {
+      updateNotionStatus();
+    }
   }
 });
 

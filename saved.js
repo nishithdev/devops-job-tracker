@@ -410,6 +410,12 @@ function renderMatches() {
     const openBtn = match.url
       ? `<a href="${escapeHtml(match.url)}" target="_blank" class="btn-open">Open ↗</a>${staleTag}`
       : '';
+    const notionBtn = match.notionPageId && !match.notionDeleted
+      ? `<a href="https://notion.so/${match.notionPageId.replace(/-/g, '')}" target="_blank" class="btn-open" style="background:#f3e5f5;color:#6a1b9a;border:1px solid #ce93d8;" title="Open in Notion">Notion ↗</a>`
+      : '';
+    const aiStatus = !match.aiAnalysis || match.aiAnalysis._error
+      ? `<button class="btn-rescan" data-match-id="${match.id}" title="Run AI analysis on this post">🤖 Scan</button>`
+      : `<button class="btn-rescan" data-match-id="${match.id}" title="Re-run AI analysis">🔄 Re-scan</button>`;
     
     // Score badge — green ≥20, yellow 12-19, gray <12
     const score = match.relevanceScore ?? null;
@@ -453,6 +459,8 @@ function renderMatches() {
         <td class="col-emails">${emailsHtml}</td>
         <td class="col-actions">
           ${openBtn}
+          ${notionBtn}
+          ${aiStatus}
           <button class="btn-delete" data-match-id="${match.id}">Delete</button>
         </td>
       </tr>
@@ -547,6 +555,13 @@ function setupEventDelegation() {
       if (matchId) deleteMatch(matchId);
       return;
     }
+
+    // Handle rescan buttons
+    if (target.classList.contains('btn-rescan')) {
+      const matchId = target.getAttribute('data-match-id');
+      if (matchId) rescanMatch(matchId, target);
+      return;
+    }
     
     // Handle see more/less buttons
     if (target.classList.contains('see-more-btn')) {
@@ -598,6 +613,50 @@ function updateRowSelection(matchId, selected) {
       row.classList.remove('selected');
     }
   }
+}
+
+async function rescanMatch(id, btn) {
+  const match = allMatches.find(m => m.id === id);
+  if (!match) return;
+  const text = match.fullText || match.snippet || '';
+  if (!text) { alert('No post text available to analyze.'); return; }
+
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳…';
+
+  const aiResp = await new Promise(r =>
+    chrome.runtime.sendMessage({ action: 'analyzeWithAI', text }, r)
+  );
+
+  if (!aiResp || aiResp.error) {
+    btn.disabled = false;
+    btn.textContent = orig;
+    alert('AI analysis failed: ' + ((aiResp && aiResp.error) || 'no response'));
+    return;
+  }
+
+  await new Promise(r =>
+    chrome.runtime.sendMessage({
+      action: 'storeAIAnalysis',
+      matchId: id,
+      analysis: aiResp.analysis,
+      timeToProcess: aiResp.timeToProcess,
+      model: aiResp.model,
+      tokens: aiResp.tokens,
+    }, r)
+  );
+
+  // Sync the updated match to Notion
+  const fresh = await new Promise(r => chrome.storage.local.get(['devopsSavedMatches'], r));
+  const freshMatch = (fresh.devopsSavedMatches || []).find(m => m.id === id);
+  if (freshMatch) {
+    chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match: freshMatch });
+  }
+
+  btn.disabled = false;
+  btn.textContent = orig;
+  // storage change listener re-renders the table automatically
 }
 
 function deleteMatch(id) {

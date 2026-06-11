@@ -324,12 +324,44 @@ try {
     'cloud engineer', 'cloud architect', 'infrastructure engineer',
     'release engineer', 'cloud devops', 'cloud ops', 'aws engineer',
     'azure engineer', 'gcp engineer', 'cloud support engineer',
+    'mlops', 'ml ops', 'finops', 'fin ops', 'devsecops', 'devsecops engineer',
+    'pipeline engineer', 'build engineer', 'reliability engineer',
+    'cloud operations engineer', 'automation engineer', 'systems engineer',
+  ]);
+
+  // "Weak" keywords — broad tech terms that generate false positives when they appear
+  // in blog posts, news, or discussions. These only score when they appear in a sentence
+  // that also has hiring or requirements context. In neutral/company sentences they
+  // contribute nothing, which cuts the false-positive rate dramatically.
+  const V2_WEAK_KEYWORDS = new Set([
+    'python', 'java', 'nodejs', 'node.js', 'golang', 'go lang', 'bash',
+    'powershell', 'power shell', '.net', 'react.js',
+    'nginx', 'apache',
+    'mongodb', 'mysql', 'postgresql', 'redis', 'cassandra', 'kafka', 'rabbitmq',
+    'github', 'gitlab',
+    'linux', 'ubuntu', 'centos', 'redhat',
+    'monitoring', 'observability',
+    's3', 'ec2', 'rds', 'iam', 'vpc', 'vnet',
+    'spark', 'pyspark', 'databricks',
+    'lamda', 'apim', 'app gateway',
+    'sonarqube', 'spring boot', 'springboot',
   ]);
 
   const V2_NEGATION_WORDS = [
     'no ', 'not ', "don't ", "doesn't ", "won't ", 'never ', 'without ',
     'no experience', 'not required', 'not looking', 'not hiring', 'not a ',
     "isn't ", "aren't ", 'non-',
+  ];
+
+  // Patterns that indicate the author is job-seeking, not hiring
+  const V2_SEEKING_PATTERNS = [
+    'open to work', 'open to opportunities', 'open to new opportunities',
+    'actively looking', 'actively seeking', 'exploring opportunities',
+    'exploring new opportunities', 'seeking new role', 'seeking a role',
+    'looking for a job', 'looking for new', 'looking for opportunities',
+    'available for work', 'available immediately', 'i am available',
+    'laid off', 'recently laid off', 'let go', 'job hunting', 'job search',
+    'between jobs', 'between roles', 'my resume', 'sharing my resume',
   ];
 
   const V2_HIRING_CONTEXT = [
@@ -339,8 +371,15 @@ try {
     'send your cv', 'send resume', 'we are hiring', "we're hiring",
     'now hiring', 'immediate opening', 'urgent requirement', 'urgent need',
     'position open', 'vacancy', 'job opportunity', 'career opportunity',
-    'reaching out', 'let me know', 'connect with me', 'drop your resume',
-    'share your profile', 'tag someone', 'actively hiring', 'actively looking',
+    'reaching out', 'connect with me', 'drop your resume',
+    'share your profile', 'tag someone', 'actively hiring',
+    'we are looking', "we're looking", 'our client is looking',
+    'our client is hiring', 'our client needs', 'client is looking',
+    'interested candidates', 'eligible candidates',
+    'please share', 'please refer', 'refer someone', 'know someone',
+    'requirement', 'hot requirement', 'immediate requirement', 'immediate joining',
+    'resource needed', 'talent needed', 'seeking candidates', 'positions available',
+    'inbox me', 'drop your cv', 'send cv', 'urgent hiring',
   ];
 
   const V2_REQUIREMENTS_CONTEXT = [
@@ -349,7 +388,9 @@ try {
     'background in', 'proficiency in', 'knowledge of', 'expertise in',
     'familiar with', 'hands-on', 'strong understanding', 'minimum',
     'required skills', 'responsibilities', 'skills needed', 'what you bring',
-    'what we need', 'what we look',
+    'what we need', 'what we look', 'preferred skills', 'nice to have',
+    'good to have', 'key skills', 'tech stack', 'technical skills',
+    'skill set', 'tech requirements', 'mandatory skills',
   ];
 
   const V2_COMPANY_CONTEXT = [
@@ -358,7 +399,8 @@ try {
     'we built', 'we leverage', 'our product uses', 'we rely on',
   ];
 
-  // Score bonus per context type when a devops keyword is found in a sentence
+  // Score bonus per context type when a devops keyword is found in a sentence.
+  // Weak keywords get 0 in neutral/company — see classifyV2.
   const V2_CONTEXT_SCORE = { hiring: 28, requirements: 22, neutral: 10, company: 3 };
 
   function v2SplitSentences(text) {
@@ -385,6 +427,21 @@ try {
     if (!text || text.trim().length < 20) return { match: false };
 
     const t = text.toLowerCase();
+
+    // Hard-block 1: invalid visa/sponsorship keywords — no score needed, bail immediately
+    const invalidHit = findAny(t, INVALID_KEYWORDS);
+    if (invalidHit) {
+      dbg('[V2] HARD BLOCK: invalid keyword:', invalidHit);
+      return { match: false, invalidHit, confidence: 0, devopsHits: [], hiringHits: [], v2signals: [`hard-blocked: "${invalidHit}"`] };
+    }
+
+    // Hard-block 2: author is job-seeking, not a recruiter/company posting a role
+    const seekingHit = V2_SEEKING_PATTERNS.find(p => t.includes(p));
+    if (seekingHit) {
+      dbg('[V2] HARD BLOCK: seeking pattern:', seekingHit);
+      return { match: false, confidence: 0, devopsHits: [], hiringHits: [], v2signals: [`hard-blocked seeking: "${seekingHit}"`] };
+    }
+
     const sentences = v2SplitSentences(t);
 
     let score = 0;
@@ -394,6 +451,7 @@ try {
 
     for (const sentence of sentences) {
       const context = v2GetContext(sentence);
+      const isStrongContext = context === 'hiring' || context === 'requirements';
 
       // --- DevOps keyword hits ---
       let sentenceDevopsHit = false;
@@ -402,14 +460,23 @@ try {
         const pos = sentence.indexOf(needle);
         if (pos === -1) continue;
 
-        // Word boundary check for short keywords (≤3 chars)
-        if (needle.length <= 3 && /^[a-z0-9]+$/.test(needle)) {
+        // Word boundary check — for short/ambiguous terms (≤4 chars or all-caps abbreviations)
+        // use a full regex test to avoid matching inside longer words (e.g. "s3" in "has3")
+        if (needle.length <= 4 || /^[a-z0-9]+$/.test(needle)) {
           if (!getCachedRegex(needle, 'i').test(sentence)) continue;
         }
 
         if (v2IsNegated(sentence, pos)) {
           score -= 3;
           v2signals.push(`negated "${keyword}" (-3)`);
+          continue;
+        }
+
+        // Weak keywords (broad tech terms) only score in hiring/requirements context
+        if (V2_WEAK_KEYWORDS.has(needle) && !isStrongContext) {
+          v2signals.push(`weak "${keyword}" [${context}] skipped`);
+          // Still track the hit for display purposes, but don't score
+          if (!devopsHits.includes(keyword)) devopsHits.push(keyword);
           continue;
         }
 
@@ -444,14 +511,19 @@ try {
     if (/\b\d+\+?\s*(?:years?|yrs?)(?:\s+of)?\s+(?:experience|exp)\b/i.test(text)) {
       score += 10; v2signals.push('years-of-exp pattern +10');
     }
-    if (/(?:\$\d+|\d+k)\s*(?:\/\s*(?:hr|hour|yr|year|annum))?/i.test(text)) {
-      score += 8; v2signals.push('salary/rate +8');
+    if (/(?:\$\s*\d+|\d+\s*\/\s*(?:hr|hour)|(?:\d+)k\s*\/\s*(?:yr|year|annum))/i.test(text)) {
+      score += 10; v2signals.push('rate/salary +10');
+    }
+    // Contract duration patterns common in C2C/staffing posts ("6 months", "12 month contract")
+    if (/\b\d+\s*(?:month|months|week|weeks)\b.*?(?:contract|engagement|assignment|project|duration)/i.test(text)
+      || /\b(?:contract|engagement|assignment)\b.*?\b\d+\s*(?:month|months|week|weeks)\b/i.test(text)) {
+      score += 8; v2signals.push('contract duration +8');
     }
     const bodyOnlyText = postEl ? getPostBodyOnly(postEl) : text;
     if (/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/.test(bodyOnlyText)) {
       score += 12; v2signals.push('email present +12');
     }
-    if (/\b(apply|dm me|message me|send (?:your )?(?:resume|cv)|drop (?:your )?(?:resume|cv))\b/i.test(text)) {
+    if (/\b(apply|dm me|message me|inbox me|send (?:your )?(?:resume|cv)|drop (?:your )?(?:resume|cv))\b/i.test(text)) {
       score += 12; v2signals.push('apply instruction +12');
     }
     const bulletCount = (text.match(/^[\s]*[•·\-\*]\s+.+/gm) || []).length;
@@ -461,16 +533,28 @@ try {
     if (/\b(remote|wfh|work from home|fully remote|hybrid)\b/i.test(text)) {
       score += 4; v2signals.push('remote/hybrid +4');
     }
-
-    // --- Invalid keyword penalty (soft — doesn't hard-block) ---
-    const invalidHit = findAny(t, INVALID_KEYWORDS);
-    if (invalidHit) {
-      score -= 25; v2signals.push(`invalid keyword "${invalidHit}" -25`);
+    // C2C / staffing-specific boost — these terms almost exclusively appear in job posts
+    const c2cTerms = ['c2c', 'corp to corp', 'corp-to-corp', '1099', 'w2', 'w-2', 'contract to hire', 'c2h'];
+    const c2cHits = c2cTerms.filter(t2 => t.includes(t2));
+    if (c2cHits.length > 0) {
+      score += 12; v2signals.push(`C2C/contract terms (${c2cHits.join(', ')}) +12`);
+    }
+    // Pipe-separated format: "Role | Location | Rate | Duration" — strong agency signal
+    const pipeSegments = text.split('|').map(s => s.trim()).filter(s => s.length > 2 && s.length < 60);
+    if (pipeSegments.length >= 3) {
+      score += 10; v2signals.push(`pipe-separated format (${pipeSegments.length} fields) +10`);
+    }
+    // Penalty: post contains no hiring signals at all (pure tech discussion)
+    if (hiringHits.length === 0) {
+      score -= 15; v2signals.push('no hiring signal -15');
     }
 
     const confidence = Math.max(0, Math.min(100, score));
-    // Require at least one devops keyword + confidence threshold
-    const match = devopsHits.length > 0 && confidence >= 40;
+    // Require at least one non-weak devops keyword that scored, OR a weak keyword
+    // paired with a hiring signal (agency posts often only have tech terms)
+    const scoredDevopsHit = devopsHits.some(k => !V2_WEAK_KEYWORDS.has(k.toLowerCase()))
+      || (devopsHits.length > 0 && hiringHits.length > 0);
+    const match = scoredDevopsHit && confidence >= 42;
 
     dbg('[V2]', match ? 'MATCH' : 'SKIP', `confidence=${confidence}`, v2signals.join(' | '));
 
@@ -480,7 +564,7 @@ try {
       devopsHits,
       hiringHit: hiringHits[0] || null,
       hiringHits,
-      invalidHit: invalidHit || null,
+      invalidHit: null,
       skills: devopsHits,
       v2signals,
     };
