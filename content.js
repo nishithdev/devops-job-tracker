@@ -1095,10 +1095,9 @@ try {
     // Update last match info for ALL valid matches (hiring + DevOps)
     lastMatchInfo = info;
     
-    // Only count hiring posts in the matches counter - skip DevOps-only posts
-    if (!info.hiringHit) {
-      dbg('SKIP counting: not a hiring post (DevOps keyword only)');
-      // Still update the indicator to show the last match info
+    // Only count posts that passed classification (V2: confidence >= 40 with devops keyword)
+    if (!info.hiringHit && !(info.confidence >= 40)) {
+      dbg('SKIP counting: not a hiring post and low V2 confidence');
       updateIndicator();
       return;
     }
@@ -1180,9 +1179,9 @@ try {
       return;
     }
     
-    // Only save hiring posts - skip DevOps-only posts
-    if (!info.hiringHit) {
-      dbg('SKIP saving: not a hiring post (DevOps keyword only)');
+    // Only save posts that passed classification (V2: confidence >= 40 with devops keyword)
+    if (!info.hiringHit && !(info.confidence >= 40)) {
+      dbg('SKIP saving: not a hiring post and low V2 confidence');
       return;
     }
     
