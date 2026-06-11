@@ -9,6 +9,7 @@ let currentPage = 1;
 let pageSize = 50;
 let sortColumn = 'score';
 let sortDirection = 'desc';
+let _loadDebounceTimer = null;
 
 function showContextInvalidError() {
   const container = document.getElementById('matches-container');
@@ -98,12 +99,10 @@ function applyFilters() {
       const emailText = (match.emails || []).join(' ');
       const skillsText = (match.skills || []).join(' ');
       // Support both old (single keyword) and new (multiple keywords) formats
-      const keywordsText = match.devopsKeywords 
-        ? match.devopsKeywords.join(' ')
-        : match.devopsKeyword;
-      
+      const keywordsText = (match.devopsKeywords || (match.devopsKeyword ? [match.devopsKeyword] : [])).join(' ');
+
       const matchesSearch = (
-        match.snippet.toLowerCase().includes(searchText) ||
+        (match.snippet || match.fullText || '').toLowerCase().includes(searchText) ||
         keywordsText.toLowerCase().includes(searchText) ||
         (match.hiringSignal && match.hiringSignal.toLowerCase().includes(searchText)) ||
         emailText.toLowerCase().includes(searchText) ||
@@ -145,8 +144,8 @@ function applySorting(direction = null) {
         break;
       case 'keyword':
         // Support both old and new formats
-        aVal = (a.devopsKeywords ? a.devopsKeywords.join(', ') : a.devopsKeyword).toLowerCase();
-        bVal = (b.devopsKeywords ? b.devopsKeywords.join(', ') : b.devopsKeyword).toLowerCase();
+        aVal = (a.devopsKeywords ? a.devopsKeywords.join(', ') : (a.devopsKeyword || '')).toLowerCase();
+        bVal = (b.devopsKeywords ? b.devopsKeywords.join(', ') : (b.devopsKeyword || '')).toLowerCase();
         break;
       case 'status':
         aVal = (a.status || 'new').toLowerCase();
@@ -268,7 +267,7 @@ function renderMatches() {
     
     // Keywords badge - handle both old (single keyword) and new (multiple keywords) formats
     let keywordBadge = '';
-    const keywords = match.devopsKeywords || [match.devopsKeyword]; // Support both formats
+    const keywords = match.devopsKeywords || (match.devopsKeyword ? [match.devopsKeyword] : []); // Support both formats
     const keywordList = keywords.map(k => escapeHtml(k)).join(', ');
     
     if (match.isHiring) {
@@ -280,6 +279,24 @@ function renderMatches() {
     // Add duplicate badge if this is a duplicate
     if (match.duplicateOf) {
       keywordBadge += ` <span class="badge badge-duplicate" style="background:#ff9800;color:white;padding:3px 8px;border-radius:4px;font-size:11px;margin-left:4px;" title="Duplicate of ${match.duplicateOf}">🔄 Duplicate</span>`;
+    }
+
+    // Recruiter re-post badge — same recruiter, different post
+    if (match.repostCount && match.repostCount > 1) {
+      keywordBadge += ` <span style="background:#7b1fa2;color:white;padding:3px 8px;border-radius:4px;font-size:11px;margin-left:4px;" title="This recruiter posted a similar role ${match.repostCount} times">🔁 Posted ${match.repostCount}×</span>`;
+    }
+
+    // Jobs-page structured fields badge
+    if (match.source === 'jobs') {
+      const parts = [];
+      if (match.company) parts.push(escapeHtml(match.company));
+      if (match.jobLocation) parts.push(escapeHtml(match.jobLocation));
+      if (match.workplaceType) parts.push(escapeHtml(match.workplaceType));
+      if (match.applicantCount != null) parts.push(`${match.applicantCount} applicants`);
+      if (match.postedDate) parts.push(escapeHtml(match.postedDate));
+      if (parts.length) {
+        keywordBadge += `<br><span style="font-size:11px;color:#555;">${parts.join(' · ')}</span>`;
+      }
     }
     
     // Status badge with color coding
@@ -1006,7 +1023,8 @@ try {
       return;
     }
     if (areaName === 'local' && changes.devopsSavedMatches) {
-      loadMatches();
+      clearTimeout(_loadDebounceTimer);
+      _loadDebounceTimer = setTimeout(loadMatches, 200);
     }
   });
 } catch (e) {

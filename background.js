@@ -52,7 +52,9 @@ function createWhatsNewNotification(oldVersion, newVersion) {
 const RESCAN_ALARM = 'devops-rescan-stale';
 const RESCAN_PERIOD_MINUTES = 24 * 60;
 
-chrome.alarms.create(RESCAN_ALARM, { periodInMinutes: RESCAN_PERIOD_MINUTES });
+chrome.alarms.get(RESCAN_ALARM, (existing) => {
+  if (!existing) chrome.alarms.create(RESCAN_ALARM, { periodInMinutes: RESCAN_PERIOD_MINUTES });
+});
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name !== RESCAN_ALARM) return;
@@ -196,7 +198,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ duplicate: true });
         return;
       }
-      match.updatedAt = match.updatedAt || Date.now();
+      match.updatedAt = Date.now();
       matches.unshift(match);
       if (matches.length > 500) matches.length = 500;
       chrome.storage.local.set({ devopsSavedMatches: matches }, () => {
@@ -205,6 +207,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         } else {
           sendResponse({ saved: true });
         }
+      });
+    });
+    return true;
+  }
+});
+
+// ---- Atomic bumpRepostCount (prevents multi-tab race on repost counter) -----
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === 'bumpRepostCount') {
+    chrome.storage.local.get(['devopsSavedMatches'], (result) => {
+      const matches = result.devopsSavedMatches || [];
+      const m = matches.find(x => x.id === message.matchId);
+      if (!m) { sendResponse({ error: 'not found' }); return; }
+      m.repostCount = (m.repostCount || 1) + 1;
+      m.lastRepostedAt = Date.now();
+      m.updatedAt = Date.now();
+      chrome.storage.local.set({ devopsSavedMatches: matches }, () => {
+        enqueueOutbox({ type: 'push', matchId: m.id }).then(() => drainOutbox());
+        sendResponse({ success: true });
       });
     });
     return true;
@@ -306,6 +327,12 @@ let schemaEnsuredFor = null;
 
 async function ensureNotionSchema(token, dbId) {
   if (schemaEnsuredFor === dbId) return true;
+  // Bug 30: check persisted cache so we don't re-fetch on every service worker restart
+  const cached = await chrome.storage.local.get(['notionSchemaDbId']);
+  if (cached.notionSchemaDbId === dbId) {
+    schemaEnsuredFor = dbId;
+    return true;
+  }
   const r = await fetch(`https://api.notion.com/v1/databases/${dbId}`, {
     headers: notionHeaders(token),
   });
@@ -324,6 +351,7 @@ async function ensureNotionSchema(token, dbId) {
     if (!pr.ok) throw new Error(`schema update failed: ${pr.status}`);
   }
   schemaEnsuredFor = dbId;
+  await chrome.storage.local.set({ notionSchemaDbId: dbId });
   return true;
 }
 
@@ -446,12 +474,17 @@ async function pushMatchToNotion(match) {
 
 const opSignature = (op) => `${op.type}:${op.matchId || op.notionPageId}`;
 
+// Bug 12: serialize enqueue to prevent get→modify→set races
+let _enqueueLock = Promise.resolve();
 async function enqueueOutbox(op) {
-  const { notionOutbox } = await chrome.storage.local.get(['notionOutbox']);
-  const queue = notionOutbox || [];
-  if (queue.some(o => opSignature(o) === opSignature(op))) return;
-  queue.push({ ...op, attempts: 0, nextAt: 0 });
-  await chrome.storage.local.set({ notionOutbox: queue });
+  _enqueueLock = _enqueueLock.then(async () => {
+    const { notionOutbox } = await chrome.storage.local.get(['notionOutbox']);
+    const queue = notionOutbox || [];
+    if (queue.some(o => opSignature(o) === opSignature(op))) return;
+    queue.push({ ...op, attempts: 0, nextAt: 0 });
+    await chrome.storage.local.set({ notionOutbox: queue });
+  });
+  return _enqueueLock;
 }
 
 let outboxDraining = false;
@@ -464,6 +497,8 @@ const OUTBOX_OP_SPACING_MS = 350;
 async function drainOutbox() {
   if (outboxDraining) return;
   outboxDraining = true;
+  // Bug 24: force-reset flag after 60s in case finally doesn't run (MV3 worker unload)
+  const drainingTimeout = setTimeout(() => { outboxDraining = false; }, 60000);
   try {
     const stored = await chrome.storage.local.get(['notionToken', 'notionDatabaseId', 'notionOutbox']);
     const queue = stored.notionOutbox || [];
@@ -507,7 +542,8 @@ async function drainOutbox() {
       if (done) {
         completed.add(opSignature(op));
       } else {
-        const attempts = (op.attempts || 0) + 1;
+        // Bug 26: sanitize attempts to avoid NaN corrupting nextAt
+        const attempts = (Number.isFinite(op.attempts) ? op.attempts : 0) + 1;
         backoffs.set(opSignature(op), {
           ...op,
           attempts,
@@ -523,6 +559,7 @@ async function drainOutbox() {
       .map(o => backoffs.get(opSignature(o)) || o);
     await chrome.storage.local.set({ notionOutbox: merged });
   } finally {
+    clearTimeout(drainingTimeout);
     outboxDraining = false;
   }
 }
@@ -632,8 +669,9 @@ async function pullSyncFromNotion() {
 
       const matchIdProp = plainText(props['Match ID']?.rich_text) || null;
       const urlProp = props.URL?.url || null;
-      const remoteUpdated = props['Updated At']?.number
-        || (page.last_edited_time ? Date.parse(page.last_edited_time) : 0);
+      // Bug 27: don't fall back to last_edited_time — unmanaged pages (no Updated At)
+      // should lose to local; last_edited_time would cause remote to overwrite local status
+      const remoteUpdated = props['Updated At']?.number || 0;
 
       let m = matches.find(x => x.notionPageId === page.id)
         || (matchIdProp && matches.find(x => x.id === matchIdProp))
@@ -668,6 +706,9 @@ async function pullSyncFromNotion() {
       // Never reached Notion (saved offline, or before creds existed) — push it
       if (!m.notionPageId && !m.notionDeleted) pushIds.add(m.id);
     }
+
+    // Bug 13: cap array size after imports (mirrors the saveMatch handler's 500-cap)
+    if (matches.length > 500) matches.length = 500;
 
     await chrome.storage.local.set({
       devopsSavedMatches: matches,
@@ -718,15 +759,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // ---- Settings mirror: share config across devices via chrome.storage.sync -----
 
-const SYNCED_SETTINGS = ['notionToken', 'notionDatabaseId', 'ollamaUrl', 'ollamaModel', 'customKeywords'];
+const SYNCED_SETTINGS = ['notionToken', 'notionDatabaseId', 'ollamaUrl', 'ollamaModel'];
 
 async function hydrateSettingsFromSync() {
+  // Bug 15: only copy sync→local when sync actively HAS a value.
+  // Removals propagate via the storage.onChanged listener; doing it here
+  // would silently delete valid credentials on first startup.
   try {
     const remote = await chrome.storage.sync.get(SYNCED_SETTINGS);
     const local = await chrome.storage.local.get(SYNCED_SETTINGS);
     const updates = {};
     for (const k of SYNCED_SETTINGS) {
-      if (local[k] === undefined && remote[k] !== undefined) updates[k] = remote[k];
+      if (remote[k] !== undefined && JSON.stringify(local[k]) !== JSON.stringify(remote[k])) {
+        updates[k] = remote[k];
+      }
     }
     if (Object.keys(updates).length) await chrome.storage.local.set(updates);
   } catch (e) {
@@ -777,8 +823,12 @@ chrome.storage.onChanged.addListener((changes, area) => {
 const OUTBOX_ALARM = 'devops-notion-outbox';
 const PULL_ALARM = 'devops-notion-pull';
 
-chrome.alarms.create(OUTBOX_ALARM, { periodInMinutes: 5 });
-chrome.alarms.create(PULL_ALARM, { periodInMinutes: 10 });
+chrome.alarms.get(OUTBOX_ALARM, (existing) => {
+  if (!existing) chrome.alarms.create(OUTBOX_ALARM, { periodInMinutes: 5 });
+});
+chrome.alarms.get(PULL_ALARM, (existing) => {
+  if (!existing) chrome.alarms.create(PULL_ALARM, { periodInMinutes: 10 });
+});
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === OUTBOX_ALARM) drainOutbox();
@@ -788,10 +838,17 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 function fullSync() {
   hydrateSettingsFromSync()
     .then(() => pullSyncFromNotion())
-    .then(() => drainOutbox());
+    .then(() => drainOutbox())
+    .catch(e => console.warn('[sync] fullSync error:', e.message));
 }
 
-chrome.runtime.onStartup.addListener(fullSync);
-chrome.runtime.onInstalled.addListener(fullSync);
+let _fullSyncPending = false;
+function scheduleFullSync() {
+  if (_fullSyncPending) return;
+  _fullSyncPending = true;
+  setTimeout(() => { _fullSyncPending = false; fullSync(); }, 500);
+}
+chrome.runtime.onStartup.addListener(scheduleFullSync);
+chrome.runtime.onInstalled.addListener(scheduleFullSync);
 
 console.log('LinkedIn DevOps Scanner background service worker loaded');

@@ -966,6 +966,7 @@ try {
   }
 
   function addApplyButton(bar, url, text, postEl) {
+    if (bar.querySelector('.devops-scan-apply-btn')) return; // already added
     const snippetPrefix = text ? text.substring(0, 120) : '';
 
     const btn = document.createElement("button");
@@ -1255,7 +1256,9 @@ try {
       
       // Check snippet similarity (guard against missing snippet on older saved matches)
       if (!existing.snippet) continue;
-      const similarity = calculateSimilarity(newMatch.snippet, existing.snippet);
+      const s1 = newMatch.fullText || newMatch.snippet;
+      const s2 = existing.fullText || existing.snippet;
+      const similarity = calculateSimilarity(s1, s2);
       
       if (similarity >= threshold) {
         dbg(`duplicate detected: ${similarity}% similar to ${existing.id}`);
@@ -1409,10 +1412,9 @@ try {
             // Step 2 — run AI analysis in the background
             chrome.runtime.sendMessage({ action: 'analyzeWithAI', text }, (aiResp) => {
               if (chrome.runtime.lastError || !aiResp || !aiResp.success) {
-                dbg('AI analyze skipped:', aiResp && aiResp.error);
-                if (aiResp && aiResp.error === 'context_too_long') {
-                  chrome.runtime.sendMessage({ action: 'storeAIAnalysis', matchId: match.id, analysis: { _error: 'context_too_long' } });
-                }
+                const errCode = (aiResp && aiResp.error) || 'unknown';
+                dbg('AI analyze skipped:', errCode);
+                chrome.runtime.sendMessage({ action: 'storeAIAnalysis', matchId: match.id, analysis: { _error: errCode } });
                 return;
               }
               dbg('AI analysis:', JSON.stringify(aiResp.analysis));
@@ -1454,15 +1456,18 @@ try {
         return;
       }
       
-      chrome.storage.local.set({
-        devopsScanCount: seenMatches.size,
-        devopsScanAnalyzed: seenPosts.size,
-        devopsScanLast: Date.now(),
-        devopsScanLastMatch: lastMatchInfo,
-      }, () => {
-        if (chrome.runtime.lastError) {
-          // Silently handle error - user likely reloaded extension
-        }
+      chrome.storage.local.get(['devopsScanCount', 'devopsScanAnalyzed'], (stored) => {
+        if (chrome.runtime.lastError) return;
+        chrome.storage.local.set({
+          devopsScanCount: Math.max(seenMatches.size, stored.devopsScanCount || 0),
+          devopsScanAnalyzed: Math.max(seenPosts.size, stored.devopsScanAnalyzed || 0),
+          devopsScanLast: Date.now(),
+          devopsScanLastMatch: lastMatchInfo,
+        }, () => {
+          if (chrome.runtime.lastError) {
+            // Silently handle error - user likely reloaded extension
+          }
+        });
       });
     } catch (e) {
       // Extension context invalidated - continue without crashing
@@ -2118,6 +2123,8 @@ try {
     obs._t = setTimeout(scanOnce, 100);
   });
 
+  let _scanIntervalStarted = false;
+
   // Initialize extension (wait for body if needed)
   function init() {
     if (!document.body) {
@@ -2134,10 +2141,13 @@ try {
     obs.observe(document.body, { childList: true, subtree: true });
 
     // Periodic safety scan in case mutations are missed.
-    setInterval(scanOnce, 2000);
+    if (!_scanIntervalStarted) {
+      _scanIntervalStarted = true;
+      setInterval(scanOnce, 2000);
 
-    // Flush keyword hit counts to storage every 30 seconds
-    setInterval(flushKeywordHits, 30000);
+      // Flush keyword hit counts to storage every 30 seconds
+      setInterval(flushKeywordHits, 30000);
+    }
 
     // Initial UI setup
     ensureIndicator();
@@ -2373,7 +2383,12 @@ try {
         chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match }, () => {
           if (chrome.runtime.lastError) return;
           chrome.runtime.sendMessage({ action: 'analyzeWithAI', text }, (aiResp) => {
-            if (chrome.runtime.lastError || !aiResp?.success) return;
+            if (chrome.runtime.lastError || !aiResp || !aiResp.success) {
+              const errCode = (aiResp && aiResp.error) || 'unknown';
+              dbg('[Jobs] AI analyze skipped:', errCode);
+              chrome.runtime.sendMessage({ action: 'storeAIAnalysis', matchId: match.id, analysis: { _error: errCode } });
+              return;
+            }
             chrome.runtime.sendMessage({
               action: 'storeAIAnalysis',
               matchId: match.id,

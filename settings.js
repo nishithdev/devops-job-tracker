@@ -504,11 +504,15 @@ document.getElementById('btn-save-notion').addEventListener('click', () => {
   const token = document.getElementById('notion-token').value.trim();
   const dbId = document.getElementById('notion-database-id').value.trim();
   const status = document.getElementById('notion-status');
-  chrome.storage.local.set({ notionToken: token || null, notionDatabaseId: dbId || null }, () => {
-    status.textContent = (token && dbId) ? '✅ Notion credentials saved.' : '🗑️ Notion credentials cleared.';
-    status.style.color = '#2e7d32';
-    setTimeout(() => { status.textContent = ''; }, 3000);
-    if (token && dbId) chrome.runtime.sendMessage({ action: 'syncNow' });
+  // Bug 28: only trigger syncNow when credentials actually changed
+  chrome.storage.local.get(['notionToken', 'notionDatabaseId'], (prev) => {
+    const credChanged = (token || null) !== prev.notionToken || (dbId || null) !== prev.notionDatabaseId;
+    chrome.storage.local.set({ notionToken: token || null, notionDatabaseId: dbId || null }, () => {
+      status.textContent = (token && dbId) ? '✅ Notion credentials saved.' : '🗑️ Notion credentials cleared.';
+      status.style.color = '#2e7d32';
+      setTimeout(() => { status.textContent = ''; }, 3000);
+      if (token && dbId && credChanged) chrome.runtime.sendMessage({ action: 'syncNow' });
+    });
   });
 });
 
