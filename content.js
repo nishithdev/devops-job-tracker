@@ -121,6 +121,9 @@ try {
     "div.fie-impression-container",
     "div.update-components-update-v2",
     "div.scaffold-finite-scroll__content > div",
+    // Groups search results — post cards use artdeco-card on li
+    "li.artdeco-card",
+    "li[class*='search-result']",
   ];
 
   // When we find a candidate, walk up to the nearest stable post root so
@@ -138,6 +141,9 @@ try {
     // Search results page — each result is an <li> with one of these markers
     "li.reusable-search__result-container",
     "li[data-occludable-entity-urn]",
+    // Groups search results
+    "li.artdeco-card",
+    "li[class*='search-result']",
     "li.artdeco-list__item",
   ];
 
@@ -613,6 +619,13 @@ try {
         if (txt) parts.push(txt);
       });
     });
+    if (parts.length === 0) {
+      // Fallback for groups/unknown layouts — use full element text minus our injected bar and comments
+      const clone = postEl.cloneNode(true);
+      clone.querySelectorAll('.devops-scan-bar, .comments-container, .social-details-social-activity, [data-test-id="comments-container"]').forEach(function(n){ n.remove(); });
+      const txt = (clone.innerText || clone.textContent || '').trim();
+      if (txt) parts.push(txt);
+    }
     return parts.join("\n");
   }
 
@@ -816,6 +829,9 @@ try {
       bar.appendChild(btn);
     }
 
+    // Inject Notion link if this post was already saved with a Notion page
+    if (url) tryInjectNotionLink(postEl, url);
+
     // Insert bar inline, directly before the post text so it never overlaps content.
     // Try known text-container selectors; fall back to prepending to the post root.
     const textContainer = postEl.querySelector(
@@ -968,6 +984,41 @@ try {
     });
 
     bar.appendChild(btn);
+  }
+
+  function setNotionLink(postEl, notionPageId) {
+    const bar = postEl.querySelector('.devops-scan-bar');
+    if (!bar || bar.querySelector('.devops-scan-notion-link')) return;
+    const a = document.createElement('a');
+    a.className = 'devops-scan-notion-link';
+    a.href = `https://www.notion.so/${notionPageId.replace(/-/g, '')}`;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.textContent = '📋 Notion';
+    a.style.cssText = `
+      padding: 5px 10px;
+      background: #2d2d2d;
+      color: #fff;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      margin-left: 6px;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+    `;
+    const openBtn = bar.querySelector(`.${BTN_CLASS}`);
+    if (openBtn) bar.insertBefore(a, openBtn);
+    else bar.appendChild(a);
+  }
+
+  function tryInjectNotionLink(postEl, url) {
+    if (!url || !chrome.storage?.local) return;
+    chrome.storage.local.get(['devopsSavedMatches'], (result) => {
+      if (chrome.runtime.lastError) return;
+      const match = (result.devopsSavedMatches || []).find(m => m.url === url);
+      if (match?.notionPageId) setNotionLink(postEl, match.notionPageId);
+    });
   }
 
   function checkDuplicateAndDecorate(postEl, bar, url, text) {
@@ -1276,9 +1327,33 @@ try {
           dbg(`extracted ${uniqueEmails.length} email(s):`, uniqueEmails.join(', '));
         }
         
-        // Avoid duplicates based on URL
+        // Avoid duplicates based on URL; but if already saved without AI, run AI now
         if (url && matches.some(m => m.url === url)) {
-          dbg('match already saved:', url);
+          const existing = matches.find(m => m.url === url);
+          const needsAI = existing && (!existing.aiAnalysis || existing.aiAnalysis._error);
+          if (!needsAI) {
+            dbg('match already saved:', url);
+            return;
+          }
+          dbg('match already saved but missing AI, running analysis:', url);
+          chrome.runtime.sendMessage({ action: 'analyzeWithAI', text, matchId: existing.id }, (aiResp) => {
+            if (chrome.runtime.lastError || !aiResp || !aiResp.success) return;
+            if (aiResp.skipped) { dbg('AI hash match, skip re-analysis:', existing.id); return; }
+            chrome.runtime.sendMessage({
+              action: 'storeAIAnalysis',
+              matchId: existing.id,
+              analysis: aiResp.analysis,
+              textHash: aiResp.textHash,
+              timeToProcess: aiResp.timeToProcess,
+              model: aiResp.model,
+              tokens: aiResp.tokens,
+            }, () => {
+              chrome.storage.local.get(['devopsSavedMatches'], (res) => {
+                const fresh = (res.devopsSavedMatches || []).find(m => m.id === existing.id);
+                if (fresh) chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match: fresh });
+              });
+            });
+          });
           return;
         }
         
@@ -1310,10 +1385,18 @@ try {
           chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match }, (syncResp) => {
             if (chrome.runtime.lastError) return;
             if (syncResp && syncResp.error) dbg('notion sync error:', syncResp.error);
-            if (syncResp && syncResp.success) dbg('notion sync ok:', match.id);
+            if (syncResp && syncResp.success) {
+              dbg('notion sync ok:', match.id);
+              // Inject Notion link badge into the post bar
+              chrome.storage.local.get(['devopsSavedMatches'], (res) => {
+                if (chrome.runtime.lastError) return;
+                const fresh = (res.devopsSavedMatches || []).find(m => m.id === match.id);
+                if (fresh?.notionPageId) setNotionLink(postEl, fresh.notionPageId);
+              });
+            }
 
             // Step 2 — run AI analysis in the background
-            chrome.runtime.sendMessage({ action: 'analyzeWithAI', text }, (aiResp) => {
+            chrome.runtime.sendMessage({ action: 'analyzeWithAI', text, matchId: match.id }, (aiResp) => {
               if (chrome.runtime.lastError || !aiResp || !aiResp.success) {
                 dbg('AI analyze skipped:', aiResp && aiResp.error);
                 if (aiResp && aiResp.error === 'context_too_long') {
@@ -1321,6 +1404,7 @@ try {
                 }
                 return;
               }
+              if (aiResp.skipped) { dbg('AI hash match, skip re-analysis:', match.id); return; }
               dbg('AI analysis:', JSON.stringify(aiResp.analysis));
 
               // Step 3 — store AI result, then PATCH the existing Notion page
@@ -1328,6 +1412,7 @@ try {
                 action: 'storeAIAnalysis',
                 matchId: match.id,
                 analysis: aiResp.analysis,
+                textHash: aiResp.textHash,
                 timeToProcess: aiResp.timeToProcess,
                 model: aiResp.model,
                 tokens: aiResp.tokens,
@@ -1340,6 +1425,7 @@ try {
                       if (chrome.runtime.lastError) return;
                       if (patchResp && patchResp.success) dbg('notion AI patch ok:', match.id);
                       if (patchResp && patchResp.error) dbg('notion AI patch error:', patchResp.error);
+                      refreshStorageCounts();
                     });
                   }
                 });
@@ -1397,6 +1483,14 @@ try {
         <span class="devops-scan-indicator__label">Matches</span>
         <span class="devops-scan-indicator__val devops-scan-indicator__val--match" id="dsi-matches">0</span>
       </div>
+      <div class="devops-scan-indicator__row">
+        <span class="devops-scan-indicator__label">Notion today</span>
+        <span class="devops-scan-indicator__val" id="dsi-notion">—</span>
+      </div>
+      <div class="devops-scan-indicator__row">
+        <span class="devops-scan-indicator__label">AI today</span>
+        <span class="devops-scan-indicator__val" id="dsi-ai">—</span>
+      </div>
       <div class="devops-scan-indicator__last" id="dsi-last">no matches yet</div>
       <button type="button" class="devops-scan-indicator__hide" title="Hide">×</button>
     `;
@@ -1431,6 +1525,26 @@ try {
     
     // Update auto-scroll status
     updateAutoScrollStatus();
+  }
+
+  function refreshStorageCounts() {
+    try {
+      if (!chrome.storage?.local) return;
+      chrome.storage.local.get(['devopsSavedMatches'], (result) => {
+        if (chrome.runtime.lastError) return;
+        const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+        const cutoff = todayStart.getTime();
+        const matches = (result.devopsSavedMatches || []).filter(m => m.timestamp >= cutoff);
+        const notionCount = matches.filter(m => m.notionPageId && !m.notionDeleted).length;
+        const aiCount = matches.filter(m => m.aiAnalysis && !m.aiAnalysis._error).length;
+        const el = indicatorEl;
+        if (!el) return;
+        const notionEl = el.querySelector('#dsi-notion');
+        const aiEl = el.querySelector('#dsi-ai');
+        if (notionEl) notionEl.textContent = notionCount;
+        if (aiEl) aiEl.textContent = aiCount;
+      });
+    } catch (e) { /* context invalidated */ }
   }
 
   // ---- Auto-scroll feature -------------------------------------------------
@@ -1934,8 +2048,124 @@ try {
     indicator.insertBefore(speedLabel, hideBtn);
     indicator.insertBefore(speedContainer, hideBtn);
     indicator.insertBefore(autoScrollButton, hideBtn);
-    
+
+    // Process Today button
+    const processTodayBtn = document.createElement('button');
+    processTodayBtn.type = 'button';
+    processTodayBtn.className = 'devops-scan-process-today-btn';
+    processTodayBtn.textContent = '⚡ Process Today';
+    processTodayBtn.title = "Retry AI analysis + Notion sync for today's matches missing either";
+    processTodayBtn.style.cssText = `
+      width: 100%;
+      margin-top: 6px;
+      padding: 7px;
+      background: #5c35cc;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      transition: background 0.2s;
+    `;
+    processTodayBtn.addEventListener('mouseenter', () => { processTodayBtn.style.background = '#3d1fa8'; });
+    processTodayBtn.addEventListener('mouseleave', () => {
+      if (!processTodayBtn.disabled) processTodayBtn.style.background = '#5c35cc';
+    });
+    processTodayBtn.addEventListener('click', () => processTodayMatches(processTodayBtn));
+    indicator.insertBefore(processTodayBtn, hideBtn);
+
     updateAutoScrollStatus();
+  }
+
+  function processTodayMatches(btn) {
+    if (!chrome.storage?.local) return;
+    btn.disabled = true;
+    btn.textContent = '⏳ Processing…';
+    btn.style.background = '#424242';
+
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const cutoff = todayStart.getTime();
+
+    chrome.storage.local.get(['devopsSavedMatches'], (result) => {
+      if (chrome.runtime.lastError) { resetBtn(btn); return; }
+      const matches = (result.devopsSavedMatches || []).filter(m =>
+        m.timestamp >= cutoff &&
+        (!m.notionPageId || m.notionDeleted || !m.aiAnalysis || m.aiAnalysis._error)
+      );
+
+      if (matches.length === 0) {
+        btn.textContent = '✅ All caught up';
+        btn.style.background = '#2e7d32';
+        btn.disabled = false;
+        setTimeout(() => resetBtn(btn), 3000);
+        return;
+      }
+
+      dbg(`[ProcessToday] ${matches.length} match(es) need processing`);
+      let pending = matches.length;
+      let done = 0;
+
+      const finish = () => {
+        done++;
+        btn.textContent = `⏳ ${done}/${matches.length}`;
+        if (done >= matches.length) {
+          refreshStorageCounts();
+          btn.textContent = `✅ Done (${matches.length})`;
+          btn.style.background = '#2e7d32';
+          btn.disabled = false;
+          setTimeout(() => resetBtn(btn), 4000);
+        }
+      };
+
+      matches.forEach(match => {
+        // Ensure Notion sync first (creates page if missing)
+        const syncAndAI = (m) => {
+          chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match: m }, (syncResp) => {
+            if (chrome.runtime.lastError) { finish(); return; }
+
+            // If AI missing or errored, run it
+            if (!m.aiAnalysis || m.aiAnalysis._error) {
+              const text = m.fullText || m.snippet || '';
+              chrome.runtime.sendMessage({ action: 'analyzeWithAI', text, matchId: m.id }, (aiResp) => {
+                if (chrome.runtime.lastError || !aiResp?.success) { finish(); return; }
+                if (aiResp.skipped) { finish(); return; }
+                chrome.runtime.sendMessage({
+                  action: 'storeAIAnalysis',
+                  matchId: m.id,
+                  analysis: aiResp.analysis,
+                  textHash: aiResp.textHash,
+                  timeToProcess: aiResp.timeToProcess,
+                  model: aiResp.model,
+                  tokens: aiResp.tokens,
+                }, () => {
+                  // Patch Notion with AI data
+                  chrome.storage.local.get(['devopsSavedMatches'], (res) => {
+                    if (chrome.runtime.lastError) { finish(); return; }
+                    const fresh = (res.devopsSavedMatches || []).find(x => x.id === m.id);
+                    if (fresh) {
+                      chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match: fresh }, () => finish());
+                    } else {
+                      finish();
+                    }
+                  });
+                });
+              });
+            } else {
+              finish();
+            }
+          });
+        };
+        syncAndAI(match);
+      });
+    });
+  }
+
+  function resetBtn(btn) {
+    btn.disabled = false;
+    btn.textContent = '⚡ Process Today';
+    btn.style.background = '#5c35cc';
   }
 
   function findPostRoot(el) {
@@ -2044,6 +2274,10 @@ try {
 
     // Flush keyword hit counts to storage every 30 seconds
     setInterval(flushKeywordHits, 30000);
+
+    // Refresh Notion/AI counts every 10 seconds
+    setInterval(refreshStorageCounts, 10000);
+    refreshStorageCounts();
 
     // Initial UI setup
     ensureIndicator();

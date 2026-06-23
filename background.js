@@ -190,12 +190,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             const data = await r.json();
             saveNotionStatus({ ok: true, ts: Date.now(), matchId: match.id });
             // On first creation, save the Notion page ID back into the match
-            if (!notionPageId && data.id) {
+            if (data.id) {
               chrome.storage.local.get(['devopsSavedMatches'], (res) => {
                 const matches = res.devopsSavedMatches || [];
                 const m = matches.find(m => m.id === match.id);
                 if (m) {
                   m.notionPageId = data.id;
+                  delete m.notionDeleted;
                   chrome.storage.local.set({ devopsSavedMatches: matches });
                 }
               });
@@ -227,6 +228,39 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
+// ---- Text hash (djb2) -------------------------------------------------------
+function hashText(str) {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) h = ((h << 5) + h) ^ str.charCodeAt(i);
+  return (h >>> 0).toString(36);
+}
+
+// ---- AI concurrency queue ---------------------------------------------------
+let _aiActive = 0;
+const _aiQueue = [];
+
+function _drainAIQueue() {
+  chrome.storage.local.get(['aiConcurrency'], (s) => {
+    const limit = Math.max(1, Math.min(3, s.aiConcurrency || 1));
+    while (_aiActive < limit && _aiQueue.length) {
+      _aiActive++;
+      const { text, resolve } = _aiQueue.shift();
+      _runOllamaRequest(text).then(result => {
+        _aiActive--;
+        resolve(result);
+        _drainAIQueue();
+      });
+    }
+  });
+}
+
+function _enqueueAI(text) {
+  return new Promise(resolve => {
+    _aiQueue.push({ text, resolve });
+    _drainAIQueue();
+  });
+}
+
 // ---- Local AI analysis via Ollama -------------------------------------------
 // Calls a local Ollama instance to extract structured fields from a post.
 // Returns: { jobTitles, visaSponsorship, confidence }
@@ -248,46 +282,61 @@ const AI_PROMPT = (text) => [
   'If nothing is mentioned return null.',
 ].join('\n');
 
+async function _runOllamaRequest(text) {
+  const s = await new Promise(r => chrome.storage.local.get(['ollamaUrl', 'ollamaModel'], r));
+  const url = (s.ollamaUrl || 'http://localhost:11434').replace(/\/$/, '');
+  const model = s.ollamaModel || 'gemma3';
+  const startTime = Date.now();
+  try {
+    const r = await fetch(`${url}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, prompt: AI_PROMPT(text), stream: false, format: 'json' }),
+    });
+    const rawText = await r.text();
+    if (!r.ok) {
+      const isContextErr = /context|too long|exceeds/i.test(rawText);
+      return { error: isContextErr ? 'context_too_long' : `Ollama ${r.status}` };
+    }
+    const data = JSON.parse(rawText);
+    const timeToProcess = Date.now() - startTime;
+    const tokens = (data.prompt_eval_count || 0) + (data.eval_count || 0);
+    if (!data.response) return { error: 'context_too_long' };
+    try {
+      const parsed = JSON.parse(data.response);
+      return { success: true, analysis: parsed, timeToProcess, model, tokens };
+    } catch (_) {
+      return { error: 'AI returned invalid JSON', raw: data.response };
+    }
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'analyzeWithAI') {
-    chrome.storage.local.get(['ollamaUrl', 'ollamaModel'], (result) => {
-      const url = (result.ollamaUrl || 'http://localhost:11434').replace(/\/$/, '');
-      const model = result.ollamaModel || 'gemma3';
-      const startTime = Date.now();
+    const text = message.text || '';
+    const incomingHash = hashText(text);
 
-      fetch(`${url}/api/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model,
-          prompt: AI_PROMPT(message.text),
-          stream: false,
-          format: 'json',
-        }),
-      })
-        .then(async r => {
-          const rawText = await r.text();
-          if (!r.ok) {
-            const isContextErr = /context|too long|exceeds/i.test(rawText);
-            sendResponse({ error: isContextErr ? 'context_too_long' : `Ollama ${r.status}` });
-            return;
-          }
-          const data = JSON.parse(rawText);
-          const timeToProcess = Date.now() - startTime;
-          const tokens = (data.prompt_eval_count || 0) + (data.eval_count || 0);
-          if (!data.response) {
-            sendResponse({ error: 'context_too_long' });
-            return;
-          }
-          try {
-            const parsed = JSON.parse(data.response);
-            sendResponse({ success: true, analysis: parsed, timeToProcess, model, tokens });
-          } catch (_) {
-            sendResponse({ error: 'AI returned invalid JSON', raw: data.response });
-          }
-        })
-        .catch(err => sendResponse({ error: err.message }));
-    });
+    // Skip if caller supplied matchId and hash matches stored hash
+    if (message.matchId) {
+      chrome.storage.local.get(['devopsSavedMatches'], (res) => {
+        const match = (res.devopsSavedMatches || []).find(m => m.id === message.matchId);
+        if (match && match.aiTextHash === incomingHash && match.aiAnalysis && !match.aiAnalysis._error) {
+          sendResponse({ success: true, analysis: match.aiAnalysis, skipped: true });
+          return;
+        }
+        _enqueueAI(text).then(result => {
+          if (result.success) result.textHash = incomingHash;
+          sendResponse(result);
+        });
+      });
+    } else {
+      _enqueueAI(text).then(result => {
+        if (result.success) result.textHash = incomingHash;
+        sendResponse(result);
+      });
+    }
     return true;
   }
 });
@@ -343,8 +392,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const matches = result.devopsSavedMatches || [];
       const match = matches.find(m => m.id === message.matchId);
       if (!match) { sendResponse({ error: 'match not found' }); return; }
-      match.aiAnalysis = message.analysis;
+
+      const incoming = message.analysis || {};
+      const missingFields = message.missingFields; // null = full replace, array = merge only these
+      if (missingFields && missingFields.length && match.aiAnalysis && !match.aiAnalysis._error) {
+        // Merge only the fields that were missing — leave others intact
+        const existing = match.aiAnalysis;
+        if (missingFields.includes('Job Title')) {
+          existing.jobTitles = incoming.jobTitles;
+          existing.jobTitle  = incoming.jobTitle;
+        }
+        if (missingFields.includes('VISA'))         existing.visaSponsorship = incoming.visaSponsorship;
+        if (missingFields.includes('AI Confidence')) existing.confidence      = incoming.confidence;
+        match.aiAnalysis = existing;
+      } else {
+        match.aiAnalysis = incoming;
+      }
+      delete match._missingFields;
       match.aiAnalyzedAt = Date.now();
+      if (message.textHash) match.aiTextHash = message.textHash;
       if (message.timeToProcess !== undefined) match.aiTimeToProcess = message.timeToProcess;
       if (message.model) match.aiModel = message.model;
       if (!match.status || match.status === 'new') match.status = 'ai_processed';

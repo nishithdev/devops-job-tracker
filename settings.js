@@ -225,18 +225,20 @@ document.getElementById('add-invalid').addEventListener('keypress', (e) => {
 // ---- Ollama (local AI) -------------------------------------------------------
 
 function loadOllamaSettings() {
-  chrome.storage.local.get(['ollamaUrl', 'ollamaModel'], (result) => {
+  chrome.storage.local.get(['ollamaUrl', 'ollamaModel', 'aiConcurrency'], (result) => {
     if (result.ollamaUrl) document.getElementById('ollama-url').value = result.ollamaUrl;
     if (result.ollamaModel) document.getElementById('ollama-model').value = result.ollamaModel;
+    if (result.aiConcurrency) document.getElementById('ollama-concurrency').value = String(result.aiConcurrency);
   });
 }
 
 document.getElementById('btn-save-ollama').addEventListener('click', () => {
   const url = document.getElementById('ollama-url').value.trim() || 'http://localhost:11434';
   const model = document.getElementById('ollama-model').value.trim() || 'gemma3';
+  const concurrency = parseInt(document.getElementById('ollama-concurrency').value, 10) || 1;
   const status = document.getElementById('ollama-status');
-  chrome.storage.local.set({ ollamaUrl: url, ollamaModel: model }, () => {
-    status.textContent = `✅ Saved — ${model} @ ${url}`;
+  chrome.storage.local.set({ ollamaUrl: url, ollamaModel: model, aiConcurrency: concurrency }, () => {
+    status.textContent = `✅ Saved — ${model} @ ${url} (concurrency: ${concurrency})`;
     status.style.color = '#2e7d32';
     setTimeout(() => { status.textContent = ''; }, 3000);
   });
@@ -274,11 +276,12 @@ document.getElementById('btn-test-ollama').addEventListener('click', () => {
 
 let bulkStopped = false;
 
-document.getElementById('btn-bulk-process').addEventListener('click', async () => {
+async function runBulkAnalysis(matchFilter = null) {
   const progressEl  = document.getElementById('bulk-progress');
   const barEl       = document.getElementById('bulk-progress-bar');
   const textEl      = document.getElementById('bulk-progress-text');
   const startBtn    = document.getElementById('btn-bulk-process');
+  const startBtnToday = document.getElementById('btn-bulk-process-today');
   const stopBtn     = document.getElementById('btn-bulk-stop');
 
   const logEl = document.getElementById('bulk-log');
@@ -294,13 +297,14 @@ document.getElementById('btn-bulk-process').addEventListener('click', async () =
 
   bulkStopped = false;
   startBtn.disabled = true;
+  startBtnToday.disabled = true;
   stopBtn.disabled = false;
   stopBtn.style.opacity = '1';
   progressEl.style.display = '';
   logEl.style.display = '';
   logEl.innerHTML = '';
   textEl.textContent = 'Fetching matches from Notion…';
-  logLine('Starting bulk AI processing…');
+  logLine(matchFilter ? 'Starting AI processing for today\'s posts…' : 'Starting bulk AI processing…');
 
   // Pull all pages from Notion and merge any that aren't in local storage
   const credsResult = await new Promise(r => chrome.storage.local.get(['notionToken', 'notionDatabaseId', 'devopsSavedMatches'], r));
@@ -349,7 +353,6 @@ document.getElementById('btn-bulk-process').addEventListener('click', async () =
               notionConfidence == null && 'AI Confidence',
             ].filter(Boolean);
             if (missingFields.length) {
-              delete existing.aiAnalysis;
               existing._missingFields = missingFields;
             } else {
               delete existing._missingFields;
@@ -397,7 +400,7 @@ document.getElementById('btn-bulk-process').addEventListener('click', async () =
   const matches = localMatches;
   const deleted  = matches.filter(m => m.notionDeleted).length;
   const analyzed = matches.filter(m => !m.notionDeleted && !needsAnalysis(m)).length;
-  const pending  = matches.filter(m => !m.notionDeleted && needsAnalysis(m));
+  const pending  = matches.filter(m => !m.notionDeleted && needsAnalysis(m) && (!matchFilter || matchFilter(m)));
 
   logLine(`Total: ${matches.length} matches — ${analyzed} analyzed, ${pending.length} pending, ${deleted} deleted/archived`, 'info');
 
@@ -416,6 +419,7 @@ document.getElementById('btn-bulk-process').addEventListener('click', async () =
     barEl.style.width = '100%';
     logLine('Nothing to process.', 'ok');
     startBtn.disabled = false;
+    startBtnToday.disabled = false;
     stopBtn.disabled = true;
     stopBtn.style.opacity = '0.5';
     return;
@@ -441,13 +445,20 @@ document.getElementById('btn-bulk-process').addEventListener('click', async () =
 
     // AI analysis
     const aiResp = await new Promise(r =>
-      chrome.runtime.sendMessage({ action: 'analyzeWithAI', text }, r)
+      chrome.runtime.sendMessage({ action: 'analyzeWithAI', text, matchId: match.id }, r)
     );
 
+    if (aiResp && aiResp.skipped) {
+      logLine(`[${done + 1}/${pending.length}] Hash match, skipped re-analysis for "${label}"`, 'ok');
+      done++;
+      barEl.style.width = `${Math.round(((done) / pending.length) * 100)}%`;
+      continue;
+    }
+
     if (aiResp && aiResp.success) {
-      // Store AI result and wait for it to flush
+      // Store AI result and wait for it to flush (merge only missing fields if specified)
       await new Promise(r =>
-        chrome.runtime.sendMessage({ action: 'storeAIAnalysis', matchId: match.id, analysis: aiResp.analysis, timeToProcess: aiResp.timeToProcess, model: aiResp.model, tokens: aiResp.tokens }, r)
+        chrome.runtime.sendMessage({ action: 'storeAIAnalysis', matchId: match.id, analysis: aiResp.analysis, textHash: aiResp.textHash, timeToProcess: aiResp.timeToProcess, model: aiResp.model, tokens: aiResp.tokens, missingFields: match._missingFields || null }, r)
       );
       // Re-read from storage so notionPageId is included, then PATCH the existing Notion page
       const fresh = await new Promise(r => chrome.storage.local.get(['devopsSavedMatches'], r));
@@ -482,8 +493,18 @@ document.getElementById('btn-bulk-process').addEventListener('click', async () =
   textEl.textContent = `✅ Done — ${done} processed, ${errors} errors${stopped}.`;
   logLine(`Finished: ${done} processed, ${errors} error${errors !== 1 ? 's' : ''}${stopped}.`, errors > 0 ? 'warn' : 'ok');
   startBtn.disabled = false;
+  startBtnToday.disabled = false;
   stopBtn.disabled = true;
   stopBtn.style.opacity = '0.5';
+}
+
+document.getElementById('btn-bulk-process').addEventListener('click', () => runBulkAnalysis());
+
+document.getElementById('btn-bulk-process-today').addEventListener('click', () => {
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const todayEnd   = todayStart + 86400000;
+  runBulkAnalysis(m => m.timestamp >= todayStart && m.timestamp < todayEnd);
 });
 
 document.getElementById('btn-bulk-stop').addEventListener('click', () => {
