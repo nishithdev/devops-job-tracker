@@ -49,14 +49,16 @@ function createWhatsNewNotification(oldVersion, newVersion) {
 
 // ---- Scheduled re-scan (stale post detection + Notion cache rebuild) ----------
 
-const RESCAN_ALARM = 'devops-rescan-stale';
+const RESCAN_ALARM        = 'devops-rescan-stale';
+const NOTION_RETRY_ALARM  = 'devops-notion-retry';
 const RESCAN_PERIOD_MINUTES = 24 * 60;
 
-chrome.alarms.create(RESCAN_ALARM, { periodInMinutes: RESCAN_PERIOD_MINUTES });
+chrome.alarms.create(RESCAN_ALARM,       { periodInMinutes: RESCAN_PERIOD_MINUTES });
+chrome.alarms.create(NOTION_RETRY_ALARM, { periodInMinutes: 5 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name !== RESCAN_ALARM) return;
-  runStaleCheck();
+  if (alarm.name === RESCAN_ALARM)       runStaleCheck();
+  if (alarm.name === NOTION_RETRY_ALARM) runNotionRetryQueue();
 });
 
 async function runStaleCheck() {
@@ -142,6 +144,70 @@ async function runStaleCheck() {
   }
 }
 
+// ---- Notion retry queue (exponential backoff, max 3 attempts) ---------------
+
+const NOTION_RETRY_DELAYS = [5 * 60_000, 15 * 60_000, 45 * 60_000]; // 5m, 15m, 45m
+
+async function _enqueueNotionRetry(matchId) {
+  const s = await chrome.storage.local.get(['notionSyncQueue']);
+  const queue = s.notionSyncQueue || [];
+  if (queue.some(e => e.matchId === matchId)) return; // already queued
+  queue.push({ matchId, attempts: 0, nextRetry: Date.now() + NOTION_RETRY_DELAYS[0] });
+  await chrome.storage.local.set({ notionSyncQueue: queue });
+}
+
+async function runNotionRetryQueue() {
+  const s = await chrome.storage.local.get(['notionSyncQueue', 'devopsSavedMatches']);
+  const queue = s.notionSyncQueue || [];
+  if (!queue.length) return;
+
+  const now = Date.now();
+  const ready = queue.filter(e => e.nextRetry <= now);
+  if (!ready.length) return;
+
+  const matches = s.devopsSavedMatches || [];
+  const remaining = queue.filter(e => e.nextRetry > now);
+
+  for (const entry of ready) {
+    const match = matches.find(m => m.id === entry.matchId);
+    if (!match) continue; // match deleted — drop from queue
+
+    const result = await _syncMatchToNotion(match);
+    if (result.success || result.skipped) continue; // done — don't re-add
+
+    entry.attempts++;
+    if (entry.attempts >= NOTION_RETRY_DELAYS.length) continue; // max attempts — drop
+    entry.nextRetry = now + NOTION_RETRY_DELAYS[entry.attempts];
+    remaining.push(entry);
+  }
+
+  await chrome.storage.local.set({ notionSyncQueue: remaining });
+}
+
+// ---- Badge count (new matches since last popup open) ------------------------
+
+async function _incrementBadge() {
+  const s = await chrome.storage.local.get(['badgeCount']);
+  const next = (s.badgeCount || 0) + 1;
+  await chrome.storage.local.set({ badgeCount: next });
+  chrome.action.setBadgeText({ text: String(next) });
+  chrome.action.setBadgeBackgroundColor({ color: '#1976d2' });
+}
+
+async function _clearBadge() {
+  await chrome.storage.local.set({ badgeCount: 0 });
+  chrome.action.setBadgeText({ text: '' });
+}
+
+// Restore badge on SW restart
+chrome.storage.local.get(['badgeCount'], (s) => {
+  const count = s.badgeCount || 0;
+  if (count > 0) {
+    chrome.action.setBadgeText({ text: String(count) });
+    chrome.action.setBadgeBackgroundColor({ color: '#1976d2' });
+  }
+});
+
 // Fetches all pages from a Notion database (handles pagination).
 async function fetchAllNotionPages(token, databaseId) {
   const pages = [];
@@ -203,6 +269,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'saveMatch':        return handleSaveMatch(message, sendResponse);
     case 'updateMatchStatus': return handleUpdateMatchStatus(message, sendResponse);
     case 'storeAIAnalysis':  return handleStoreAIAnalysis(message, sendResponse);
+    case 'clearBadge':       _clearBadge(); sendResponse({ ok: true }); return;
   }
 });
 
@@ -345,9 +412,11 @@ async function _syncMatchToNotion(match) {
       return _syncMatchToNotion({ ...match, notionPageId: undefined });
     }
     saveNotionStatus({ ok: false, ts: Date.now(), error: `${r.status}: ${errText}` });
+    if (match.id) _enqueueNotionRetry(match.id);
     return { error: `${r.status}: ${errText}` };
   } catch (err) {
     saveNotionStatus({ ok: false, ts: Date.now(), error: err.message });
+    if (match.id) _enqueueNotionRetry(match.id);
     return { error: err.message };
   }
 }
@@ -534,6 +603,7 @@ function _saveLocalMatch(match, existing, sendResponse) {
     if (chrome.runtime.lastError) {
       sendResponse({ error: chrome.runtime.lastError.message });
     } else {
+      _incrementBadge();
       sendResponse({ saved: true });
     }
   });

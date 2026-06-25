@@ -27,11 +27,17 @@ function updateStatus(status) {
 }
 
 function updateNotionStatus() {
-  safeStorageGet(['notionToken', 'notionDatabaseId', 'notionLastSync']).then((res) => {
+  safeStorageGet(['notionToken', 'notionDatabaseId', 'notionLastSync', 'devopsSavedMatches']).then((res) => {
     const section = document.getElementById('notion-sync-section');
     const el = document.getElementById('notion-sync-status');
+    const unsyncedBtn = document.getElementById('notion-sync-unsynced');
     if (!res.notionToken || !res.notionDatabaseId) return; // not configured — keep hidden
     section.style.display = '';
+
+    const matches = res.devopsSavedMatches || [];
+    const unsynced = matches.filter(m => !m.notionPageId && !m.notionDeleted);
+    unsyncedBtn.style.display = unsynced.length > 0 ? '' : 'none';
+    if (unsynced.length > 0) unsyncedBtn.textContent = `Sync Unsynced (${unsynced.length})`;
 
     const last = res.notionLastSync;
     if (!last) {
@@ -278,6 +284,29 @@ document.getElementById('notion-test-sync').addEventListener('click', () => {
   });
 });
 
+document.getElementById('notion-sync-unsynced').addEventListener('click', async () => {
+  const btn = document.getElementById('notion-sync-unsynced');
+  const el = document.getElementById('notion-sync-status');
+  btn.disabled = true;
+  btn.textContent = 'Syncing…';
+
+  const { devopsSavedMatches } = await safeStorageGet(['devopsSavedMatches']);
+  const unsynced = (devopsSavedMatches || []).filter(m => !m.notionPageId && !m.notionDeleted);
+  if (!unsynced.length) { btn.disabled = false; updateNotionStatus(); return; }
+
+  let ok = 0, fail = 0;
+  for (const match of unsynced) {
+    const resp = await new Promise(r => chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match }, r));
+    if (resp && resp.success) ok++; else fail++;
+  }
+
+  btn.disabled = false;
+  el.innerHTML = fail === 0
+    ? `<span style="color:#2e7d32;">✅ Synced ${ok} match${ok !== 1 ? 'es' : ''}.</span>`
+    : `<span style="color:#e65100;">⚠️ ${ok} synced, ${fail} failed — check credentials.</span>`;
+  updateNotionStatus();
+});
+
 async function checkServerStatus() {
   const { localServerUrl } = await safeStorageGet(['localServerUrl']);
   const wrap  = document.getElementById('server-status-wrap');
@@ -306,6 +335,7 @@ updateNotionStatus();
 checkServerStatus();
 checkFirstTimeUser();
 checkVersionUpdate();
+chrome.runtime.sendMessage({ action: 'clearBadge' });
 
 // Refresh stats every 2 seconds
 // setInterval(updateStats, 2000);
