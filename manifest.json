@@ -7,7 +7,8 @@
   "host_permissions": [
     "https://www.linkedin.com/*",
     "https://api.notion.com/*",
-    "http://localhost/*"
+    "http://localhost/*",
+    "http://*:3747/*"
   ],
   "action": {
     "default_popup": "popup.html",
@@ -46,6 +47,8 @@
         "shared/keywordConfig.js",
         "shared/formatters.js",
         "shared/modalFactory.js",
+        "shared/postHelpers.js",
+        "shared/matchHelpers.js",
         "tour.js",
         "content.js"
       ],

@@ -278,9 +278,32 @@ document.getElementById('notion-test-sync').addEventListener('click', () => {
   });
 });
 
+async function checkServerStatus() {
+  const { localServerUrl } = await safeStorageGet(['localServerUrl']);
+  const wrap  = document.getElementById('server-status-wrap');
+  const dot   = document.getElementById('server-dot');
+  const label = document.getElementById('server-label');
+  if (!localServerUrl) { wrap.style.display = 'none'; return; }
+  wrap.style.display = 'flex';
+  try {
+    const r = await fetch(`${localServerUrl}/health`, { signal: AbortSignal.timeout(2000) });
+    if (r.ok) {
+      const d = await r.json();
+      dot.className = 'server-dot online';
+      label.textContent = `Server · ${d.wsClients} online`;
+    } else {
+      throw new Error(r.status);
+    }
+  } catch (_) {
+    dot.className = 'server-dot offline';
+    label.textContent = 'Server offline';
+  }
+}
+
 // Initialize
 updateStats();
 updateNotionStatus();
+checkServerStatus();
 checkFirstTimeUser();
 checkVersionUpdate();
 

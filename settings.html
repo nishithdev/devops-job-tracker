@@ -393,6 +393,31 @@
         </div>
       </div>
 
+      <!-- Local Server -->
+      <div class="section">
+        <div class="section-header">
+          <div>
+            <div class="section-title">🖥️ Local Server</div>
+          </div>
+        </div>
+        <div class="section-description">
+          Optional. Run <code>server/server.js</code> on a shared machine so all users deduplicate matches and share the AI queue.
+          Leave blank to use extension-only mode.
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">
+          <div style="display:flex;gap:8px;align-items:center;">
+            <label style="width:110px;font-size:13px;font-weight:600;">Server URL</label>
+            <input type="text" id="local-server-url" placeholder="http://192.168.x.x:3747"
+              style="flex:1;padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;" />
+          </div>
+          <div style="display:flex;gap:8px;">
+            <button class="btn" id="btn-save-server">Save</button>
+            <button class="btn" id="btn-test-server">Test Connection</button>
+          </div>
+        </div>
+        <div id="server-status" style="margin-top:6px;font-size:12px;color:#757575;"></div>
+      </div>
+
       <!-- Notion Sync -->
       <div class="section">
         <div class="section-header">
@@ -414,6 +439,11 @@
           <div style="display:flex;gap:8px;align-items:center;">
             <label style="width:110px;font-size:13px;font-weight:600;">Database ID</label>
             <input type="text" id="notion-database-id" placeholder="32-char ID from the database URL"
+              style="flex:1;padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;" />
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <label style="width:110px;font-size:13px;font-weight:600;">Your Name</label>
+            <input type="text" id="notion-user-name" placeholder="e.g. Nishith (shown on Notion rows)"
               style="flex:1;padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;" />
           </div>
           <div style="display:flex;gap:8px;">

@@ -197,7 +197,15 @@ try {
   // non-breaking spaces   common in LinkedIn's DOM) to single spaces.
   // This ensures phrases like "w2 only" match even when LinkedIn renders
   // them with non-breaking spaces between words.
-  const lower = (s) => (s || "").toLowerCase().replace(/[\s ]+/g, ' ').trim();
+  // normalizeText (lower alias) defined in shared/utils.js
+  const lower = normalizeText;
+
+  // djb2 hash — mirrors background.js hashText for textHash comparison
+  const hashText = (str) => {
+    let h = 5381;
+    for (let i = 0; i < str.length; i++) h = ((h << 5) + h) ^ str.charCodeAt(i);
+    return (h >>> 0).toString(36);
+  };
 
   function findAny(haystack, needles) {
     return needles.find((n) => {
@@ -237,89 +245,7 @@ try {
     });
   }
 
-  function classify(text) {
-    const t = lower(text);
-    
-    // Safety check: reject empty or very short text
-    if (!text || text.trim().length < 20) {
-      if (DEBUG) {
-        dbg("SKIP: text too short (len=" + text.length + ")");
-      }
-      return { match: false };
-    }
-    
-    // Find ALL matching DevOps keywords (not just the first one)
-    const devopsHits = findAll(t, DEVOPS_KEYWORDS);
-    if (devopsHits.length === 0) {
-      // Check if hiring signal exists (for debugging false positives)
-      const hiringOnly = findAny(t, HIRING_SIGNALS);
-      if (hiringOnly && DEBUG) {
-        dbg("SKIP: hiring signal only (no devops keyword):", hiringOnly);
-        dbg("Full text:", text);
-      }
-      return { match: false };
-    }
-    
-    // Find ALL matching hiring signals (not just the first one)
-    const hiringHits = findAll(t, HIRING_SIGNALS);
-    const hiringHit = hiringHits.length > 0 ? hiringHits[0] : null;
-    
-    // ONLY match posts with hiring signals - skip DevOps-only content
-    if (!hiringHit) {
-      if (DEBUG) {
-        dbg("SKIP: DevOps keyword found but no hiring signal");
-        dbg("DevOps keywords:", devopsHits.join(', '));
-        dbg("Full text:", text);
-      }
-      return { match: false };
-    }
-    
-    // Check for invalid keywords (USC only, no sponsorship, etc.)
-    const invalidHit = findAny(t, INVALID_KEYWORDS);
-    
-    // Only match posts with both DevOps keywords AND hiring signals
-    if (DEBUG) {
-      // Create highlighted version of text for debugging
-      let highlightedText = text;
-      
-      // Highlight DevOps keywords in yellow
-      devopsHits.forEach(keyword => {
-        const regex = new RegExp(`\\b(${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\b`, 'gi');
-        highlightedText = highlightedText.replace(regex, '🟡$1🟡');
-      });
-      
-      // Highlight hiring signal in green
-      if (hiringHit) {
-        const regex = new RegExp(`\\b(${hiringHit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\b`, 'gi');
-        highlightedText = highlightedText.replace(regex, '🟢$1🟢');
-      }
-      
-      // Highlight invalid keyword in orange
-      if (invalidHit) {
-        const regex = new RegExp(`\\b(${invalidHit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\b`, 'gi');
-        highlightedText = highlightedText.replace(regex, '🟠$1🟠');
-      }
-      
-      dbg("=== MATCH FOUND ===");
-      dbg("DevOps keywords:", devopsHits.join(', '));
-      dbg("Hiring signals:", hiringHits.join(', '));
-      dbg("Invalid keyword:", invalidHit || "none");
-      dbg("Skills:", devopsHits.join(', ') || "none");
-      dbg("--- FULL POST TEXT (with highlights) ---");
-      dbg(highlightedText);
-      dbg("--- END POST TEXT ---");
-    }
-    return { match: true, devopsHits, hiringHit, hiringHits, invalidHit, skills: devopsHits };
-  }
-
   // ---- Classifier V2 — contextual, sentence-level, negation-aware ----------
-  //
-  // Improvements over classify():
-  //   1. Negation detection  — "no terraform required" no longer matches
-  //   2. Sentence context    — keyword in "we're hiring X" scores higher than
-  //                            "we use X internally"
-  //   3. Role vs tool weight — role keyword alone is strong; tool keyword needs
-  //                            supporting context
   //   4. Structural signals  — bullets, years-of-exp patterns, salary, apply
   //                            instructions all contribute to confidence
   //   5. Soft scoring        — returns confidence 0-100 instead of binary
@@ -492,50 +418,7 @@ try {
     };
   }
 
-  // ---- Relevance scoring --------------------------------------------------
-  // Scores a match 0-∞ so saved.js can sort best leads to the top.
-  // Weights:
-  //   +2 per unique DevOps keyword hit
-  //   +1 per hiring signal (capped at 5)
-  //   +1 per matched skill (capped at 8)
-  //   +5 if at least one email was extracted
-  //   +3 if "remote" / "wfh" / "work from home" appears
-  //   +3 per C2C/contract term (capped at 9)
-  function computeRelevanceScore(devopsHits, hiringHits, skills, text, emails) {
-    let score = 0;
-    const t = lower(text);
-
-    // DevOps keyword hits (+2 each, no cap — more specific = stronger signal)
-    score += (devopsHits || []).length * 2;
-
-    // Hiring signals (+1 each, cap 5)
-    score += Math.min((hiringHits || []).length, 5);
-
-    // Skills (+1 each, cap 8)
-    score += Math.min((skills || []).length, 8);
-
-    // Email present (+5 — high-value for cold outreach)
-    if (emails && emails.length > 0) score += 5;
-
-    // Remote work signals (+3)
-    if (/\b(remote|wfh|work from home|fully remote|100% remote)\b/.test(t)) score += 3;
-
-    // C2C / contract terms (+3 each, cap 9)
-    const contractTerms = [
-      'c2c', 'corp to corp', 'corp-to-corp', 'contract', '1099', 'w2', 'w-2',
-      'contract to hire', 'c2h', 'contract-to-hire', 'contract only', 'contract role'
-    ];
-    let contractMatches = 0;
-    for (const term of contractTerms) {
-      if (t.includes(term)) {
-        contractMatches++;
-        if (contractMatches * 3 >= 9) break;
-      }
-    }
-    score += Math.min(contractMatches * 3, 9);
-
-    return score;
-  }
+  // computeRelevanceScore defined in shared/matchHelpers.js
 
   // ---- Keyword hit tracking -----------------------------------------------
   // Counts how many times each keyword has been seen in confirmed matches.
@@ -571,81 +454,7 @@ try {
     }
   }
 
-  function getPostText(postEl) {
-    // Pull from all known body containers and join. innerText gets the
-    // visible text including the expanded "see more" content once shown,
-    // and textContent is a fallback that includes hidden nodes too.
-    const bodySelectors = [
-      "[data-testid='expandable-text-box']", // New feed layout (2024+)
-      ".feed-shared-update-v2__description",
-      ".update-components-text",
-      ".feed-shared-text",
-      ".feed-shared-inline-show-more-text",
-      ".update-components-update-v2__commentary",
-      "[data-test-id='main-feed-activity-card__commentary']",
-    ];
-    const parts = [];
-    bodySelectors.forEach((sel) => {
-      postEl.querySelectorAll(sel).forEach((n) => {
-        const txt = n.innerText || n.textContent || "";
-        if (txt) parts.push(txt);
-      });
-    });
-    if (parts.length === 0) {
-      // Fallback: whole post text. Slower but catches unknown layouts.
-      parts.push(postEl.innerText || postEl.textContent || "");
-    }
-    return parts.join("\n");
-  }
-
-  // Returns only the post author's body text — no fallback to full element so
-  // comments and replies are never included. Used for email extraction.
-  function getPostBodyOnly(postEl) {
-    const bodySelectors = [
-      "[data-testid='expandable-text-box']",
-      ".feed-shared-update-v2__description",
-      ".update-components-text",
-      ".feed-shared-text",
-      ".feed-shared-inline-show-more-text",
-      ".update-components-update-v2__commentary",
-      "[data-test-id='main-feed-activity-card__commentary']",
-    ];
-    const parts = [];
-    bodySelectors.forEach((sel) => {
-      postEl.querySelectorAll(sel).forEach((n) => {
-        // Skip nodes that are inside a comments section
-        if (n.closest('.comments-container, .social-details-social-activity, [data-test-id="comments-container"]')) return;
-        const txt = n.innerText || n.textContent || "";
-        if (txt) parts.push(txt);
-      });
-    });
-    if (parts.length === 0) {
-      // Fallback for groups/unknown layouts — use full element text minus our injected bar and comments
-      const clone = postEl.cloneNode(true);
-      clone.querySelectorAll('.devops-scan-bar, .comments-container, .social-details-social-activity, [data-test-id="comments-container"]').forEach(function(n){ n.remove(); });
-      const txt = (clone.innerText || clone.textContent || '').trim();
-      if (txt) parts.push(txt);
-    }
-    return parts.join("\n");
-  }
-
-  function getPostUrl(postEl) {
-    let urn = postEl.getAttribute("data-urn");
-    if (!urn) {
-      const inner = postEl.querySelector("[data-urn*=':activity:']");
-      if (inner) urn = inner.getAttribute("data-urn");
-    }
-    if (urn && urn.includes(":activity:")) {
-      const id = urn.split(":activity:")[1];
-      return `https://www.linkedin.com/feed/update/urn:li:activity:${id}/`;
-    }
-    // Fallback: look for a permalink anchor inside the post.
-    // New feed layout uses various link patterns, try them all.
-    const a = postEl.querySelector(
-      "a[href*='/feed/update/'], a[href*='/posts/'], a.app-aware-link[href*='/feed/update/'], a.app-aware-link[href*='/posts/']"
-    );
-    return a ? a.href : null;
-  }
+  // getPostText, getPostBodyOnly, getPostUrl defined in shared/postHelpers.js
 
   // Highlight styles per category — background only, no font changes
   const HIGHLIGHT_STYLES = {
@@ -803,16 +612,13 @@ try {
       bar.appendChild(scorePill);
     }
 
-    // "Applied" toggle — only for real hiring posts (invalid posts are not saved)
+    // AI status tag — updated after analysis completes
     if (!info.invalidHit) {
-      addApplyButton(bar, url, text, postEl);
-      // Gmail draft button — only when emails are present in post
-      const postBodyOnly = getPostBodyOnly(postEl);
-      const postEmails = (postBodyOnly.match(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g) || []);
-      const uniquePostEmails = [...new Set(postEmails)].slice(0, 5);
-      if (uniquePostEmails.length > 0) {
-        addGmailDraftButton(bar, uniquePostEmails, info, url);
-      }
+      const aiTag = document.createElement('span');
+      aiTag.className = 'devops-scan-ai-tag';
+      aiTag.textContent = '⏳ AI…';
+      aiTag.style.cssText = 'font-size:10px;color:#7c3aed;background:#ede9fe;border-radius:4px;padding:2px 6px;margin-left:4px;';
+      bar.appendChild(aiTag);
     }
 
     if (url) {
@@ -869,121 +675,20 @@ try {
     return null;
   }
 
-  // Write a new status back to the saved match; retries up to 3× if the
-  // match hasn't been persisted by saveMatch() yet (async race window).
-  function persistAppliedStatus(url, snippetPrefix, newStatus, attempt = 0) {
-    try {
-      chrome.runtime.sendMessage({ action: 'updateMatchStatus', url, snippetPrefix, status: newStatus }, (resp) => {
-        if (chrome.runtime.lastError) return;
-        if (resp && resp.success) {
-          dbg('apply status set:', newStatus, url || snippetPrefix);
-        } else if (resp && resp.error === 'not found' && attempt < 4) {
-          setTimeout(() => persistAppliedStatus(url, snippetPrefix, newStatus, attempt + 1), 600);
-        } else if (resp && resp.error === 'not found') {
-          dbg('persistAppliedStatus: match not found after retries, status lost', url || snippetPrefix);
-        }
-      });
-    } catch (e) {
-      dbg('persistAppliedStatus error:', e.message);
+  function _updateAITag(postEl, analysis) {
+    const tag = postEl.querySelector('.devops-scan-ai-tag');
+    if (!tag) return;
+    if (!analysis || analysis._error) {
+      tag.textContent = analysis?._error === 'context_too_long' ? '⚠️ Too long' : '❌ AI fail';
+      tag.style.color = '#b91c1c';
+      tag.style.background = '#fee2e2';
+    } else {
+      const titles = analysis.jobTitles?.length ? analysis.jobTitles.slice(0, 2).join(', ') : null;
+      const visa   = analysis.visaSponsorship ? '🛂' : '';
+      tag.textContent = `🤖 ${titles || 'AI done'}${visa ? ' ' + visa : ''}`;
+      tag.style.color = '#065f46';
+      tag.style.background = '#d1fae5';
     }
-  }
-
-  function addApplyButton(bar, url, text, postEl) {
-    const snippetPrefix = text ? text.substring(0, 120) : '';
-
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "devops-scan-apply-btn";
-
-    const setUnapplied = () => {
-      btn.textContent = "📧 Applied?";
-      btn.style.cssText = `
-        padding: 5px 10px;
-        background: #1565c0;
-        color: #fff;
-        border: none;
-        border-radius: 4px;
-        cursor: pointer;
-        font-size: 12px;
-        font-weight: 600;
-        margin-left: 6px;
-        transition: background 0.15s;
-      `;
-      btn.title = "Mark this post as Applied";
-      btn.dataset.applied = "false";
-    };
-
-    const setApplied = () => {
-      btn.textContent = "✅ Applied";
-      btn.style.cssText = `
-        padding: 5px 10px;
-        background: #2e7d32;
-        color: #fff;
-        border: none;
-        border-radius: 4px;
-        cursor: pointer;
-        font-size: 12px;
-        font-weight: 600;
-        margin-left: 6px;
-        transition: background 0.15s;
-      `;
-      btn.title = "Click to undo Applied";
-      btn.dataset.applied = "true";
-    };
-
-    setUnapplied();
-
-    const applyDim = () => { if (postEl) postEl.classList.add('devops-scan-match--applied'); };
-    const removeDim = () => { if (postEl) postEl.classList.remove('devops-scan-match--applied'); };
-
-    // Sync initial state from storage (match may already be marked applied)
-    try {
-      if (chrome.storage && chrome.storage.local) {
-        chrome.storage.local.get(['devopsSavedMatches'], (result) => {
-          if (chrome.runtime.lastError) return;
-          const match = findSavedMatch(result.devopsSavedMatches || [], url, snippetPrefix);
-          if (match && match.status === 'applied') { setApplied(); applyDim(); }
-        });
-      }
-    } catch (e) { /* context invalidated */ }
-
-    btn.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const isApplied = btn.dataset.applied === "true";
-      const newStatus = isApplied ? 'new' : 'applied';
-      // Optimistic UI update — feels instant
-      if (newStatus === 'applied') { setApplied(); applyDim(); } else { setUnapplied(); removeDim(); }
-      persistAppliedStatus(url, snippetPrefix, newStatus);
-    });
-
-    bar.appendChild(btn);
-  }
-
-  function addGmailDraftButton(bar, emails, info, postUrl) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "devops-scan-gmail-btn";
-    btn.textContent = "✉️ Draft";
-    btn.title = `Draft outreach email to: ${emails.join(', ')}`;
-
-    btn.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-
-      const to = emails[0];
-      const role = (info.devopsHits || []).slice(0, 2).join(' / ') || 'DevOps';
-      const subject = encodeURIComponent(`Interested in ${role} opportunity`);
-      const body = encodeURIComponent(
-        `Hi,\n\nI came across your post about a ${role} role and I'm very interested.\n\n` +
-        `I have experience with ${(info.skills || info.devopsHits || []).slice(0, 3).join(', ')} ` +
-        `and would love to connect.\n\nWould you be open to a quick chat?\n\nBest regards`
-      );
-      const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(to)}&su=${subject}&body=${body}`;
-      window.open(gmailUrl, "_blank", "noopener,noreferrer");
-    });
-
-    bar.appendChild(btn);
   }
 
   function setNotionLink(postEl, notionPageId) {
@@ -994,19 +699,17 @@ try {
     a.href = `https://www.notion.so/${notionPageId.replace(/-/g, '')}`;
     a.target = '_blank';
     a.rel = 'noopener noreferrer';
-    a.textContent = '📋 Notion';
+    a.innerHTML = '<svg width="16" height="16" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M5.716 29.2178L2.27664 24.9331C1.44913 23.9023 1 22.6346 1 21.3299V5.81499C1 3.86064 2.56359 2.23897 4.58071 2.10125L20.5321 1.01218C21.691 0.933062 22.8428 1.24109 23.7948 1.8847L29.3992 5.67391C30.4025 6.35219 31 7.46099 31 8.64426V26.2832C31 28.1958 29.4626 29.7793 27.4876 29.9009L9.78333 30.9907C8.20733 31.0877 6.68399 30.4237 5.716 29.2178Z" fill="white"/><path d="M11.2481 13.5787V13.3756C11.2481 12.8607 11.6605 12.4337 12.192 12.3982L16.0633 12.1397L21.417 20.0235V13.1041L20.039 12.9204V12.824C20.039 12.303 20.4608 11.8732 20.9991 11.8456L24.5216 11.6652V12.1721C24.5216 12.41 24.3446 12.6136 24.1021 12.6546L23.2544 12.798V24.0037L22.1906 24.3695C21.3018 24.6752 20.3124 24.348 19.8036 23.5803L14.6061 15.7372V23.223L16.2058 23.5291L16.1836 23.6775C16.1137 24.1423 15.7124 24.4939 15.227 24.5155L11.2481 24.6926C11.1955 24.1927 11.5701 23.7456 12.0869 23.6913L12.6103 23.6363V13.6552L11.2481 13.5787Z" fill="#2d2d2d"/><path fill-rule="evenodd" clip-rule="evenodd" d="M20.6749 2.96678L4.72347 4.05585C3.76799 4.12109 3.02734 4.88925 3.02734 5.81499V21.3299C3.02734 22.1997 3.32676 23.0448 3.87843 23.7321L7.3178 28.0167C7.87388 28.7094 8.74899 29.0909 9.65435 29.0352L27.3586 27.9454C28.266 27.8895 28.9724 27.1619 28.9724 26.2832V8.64426C28.9724 8.10059 28.6979 7.59115 28.2369 7.27951L22.6325 3.49029C22.0613 3.10413 21.3702 2.91931 20.6749 2.96678ZM5.51447 6.057C5.29261 5.89274 5.3982 5.55055 5.6769 5.53056L20.7822 4.44711C21.2635 4.41259 21.7417 4.54512 22.1309 4.82088L25.1617 6.96813C25.2767 7.04965 25.2228 7.22563 25.0803 7.23338L9.08387 8.10336C8.59977 8.12969 8.12193 7.98747 7.73701 7.7025L5.51447 6.057ZM8.33357 10.8307C8.33357 10.311 8.75341 9.88177 9.29027 9.85253L26.203 8.93145C26.7263 8.90296 27.1667 9.30534 27.1667 9.81182V25.0853C27.1667 25.604 26.7484 26.0328 26.2126 26.0633L9.40688 27.0195C8.8246 27.0527 8.33357 26.6052 8.33357 26.0415V10.8307Z" fill="#2d2d2d"/></svg>';
+    a.title = 'Notion';
     a.style.cssText = `
-      padding: 5px 10px;
-      background: #2d2d2d;
-      color: #fff;
-      border-radius: 4px;
-      font-size: 12px;
-      font-weight: 600;
       margin-left: 6px;
       text-decoration: none;
       display: inline-flex;
       align-items: center;
+      opacity: 0.8;
     `;
+    a.onmouseenter = () => a.style.opacity = '1';
+    a.onmouseleave = () => a.style.opacity = '0.8';
     const openBtn = bar.querySelector(`.${BTN_CLASS}`);
     if (openBtn) bar.insertBefore(a, openBtn);
     else bar.appendChild(a);
@@ -1160,68 +863,7 @@ try {
     updateIndicator();
   }
 
-  // ---- Duplicate Detection Helpers ----------------------------------------
-  
-  /**
-   * Calculate similarity between two strings (0-100%)
-   * Uses character overlap method for speed
-   */
-  function calculateSimilarity(str1, str2) {
-    if (!str1 || !str2) return 0;
-    
-    // Normalize: lowercase, remove extra whitespace, punctuation
-    const normalize = (s) => s.toLowerCase()
-      .replace(/[^\w\s]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    
-    const s1 = normalize(str1);
-    const s2 = normalize(str2);
-    
-    if (s1 === s2) return 100;
-    if (s1.length === 0 || s2.length === 0) return 0;
-    
-    // Use character bigrams for similarity comparison
-    const getBigrams = (str) => {
-      const bigrams = new Set();
-      for (let i = 0; i < str.length - 1; i++) {
-        bigrams.add(str.slice(i, i + 2));
-      }
-      return bigrams;
-    };
-    
-    const bigrams1 = getBigrams(s1);
-    const bigrams2 = getBigrams(s2);
-    
-    const intersection = new Set([...bigrams1].filter(x => bigrams2.has(x)));
-    const union = new Set([...bigrams1, ...bigrams2]);
-    
-    return Math.round((intersection.size / union.size) * 100);
-  }
-  
-  /**
-   * Find duplicate matches based on content similarity
-   * Returns the ID of the duplicate match if found, null otherwise
-   */
-  function findDuplicate(newMatch, existingMatches, threshold = 85) {
-    for (const existing of existingMatches) {
-      // Check URL first (exact match)
-      if (newMatch.url && existing.url && newMatch.url === existing.url) {
-        return existing.id;
-      }
-      
-      // Check snippet similarity (guard against missing snippet on older saved matches)
-      if (!existing.snippet) continue;
-      const similarity = calculateSimilarity(newMatch.snippet, existing.snippet);
-      
-      if (similarity >= threshold) {
-        dbg(`duplicate detected: ${similarity}% similar to ${existing.id}`);
-        return existing.id;
-      }
-    }
-    
-    return null;
-  }
+  // calculateSimilarity, findDuplicate defined in shared/matchHelpers.js
 
   function saveMatch(postEl, url, info, text) {
     // Skip invalid posts (USC only, no sponsorship, etc.)
@@ -1336,9 +978,11 @@ try {
             return;
           }
           dbg('match already saved but missing AI, running analysis:', url);
+          updateAIQueue(+1);
           chrome.runtime.sendMessage({ action: 'analyzeWithAI', text, matchId: existing.id }, (aiResp) => {
+            updateAIQueue(-1);
             if (chrome.runtime.lastError || !aiResp || !aiResp.success) return;
-            if (aiResp.skipped) { dbg('AI hash match, skip re-analysis:', existing.id); return; }
+            // skipped = cached result — still store so status → ai_processed
             chrome.runtime.sendMessage({
               action: 'storeAIAnalysis',
               matchId: existing.id,
@@ -1348,10 +992,9 @@ try {
               model: aiResp.model,
               tokens: aiResp.tokens,
             }, () => {
-              chrome.storage.local.get(['devopsSavedMatches'], (res) => {
-                const fresh = (res.devopsSavedMatches || []).find(m => m.id === existing.id);
-                if (fresh) chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match: fresh });
-              });
+              _updateAITag(postEl, aiResp.analysis);
+              const matchWithAI = { ...existing, aiAnalysis: aiResp.analysis, status: 'ai_processed' };
+              chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match: matchWithAI });
             });
           });
           return;
@@ -1385,26 +1028,44 @@ try {
           chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match }, (syncResp) => {
             if (chrome.runtime.lastError) return;
             if (syncResp && syncResp.error) dbg('notion sync error:', syncResp.error);
-            if (syncResp && syncResp.success) {
+            if (syncResp && syncResp.success && syncResp.notionPageId) {
               dbg('notion sync ok:', match.id);
-              // Inject Notion link badge into the post bar
-              chrome.storage.local.get(['devopsSavedMatches'], (res) => {
-                if (chrome.runtime.lastError) return;
-                const fresh = (res.devopsSavedMatches || []).find(m => m.id === match.id);
-                if (fresh?.notionPageId) setNotionLink(postEl, fresh.notionPageId);
-              });
+              // Cache notionPageId locally — avoids storage re-read before Step 3
+              match.notionPageId = syncResp.notionPageId;
+              setNotionLink(postEl, syncResp.notionPageId);
             }
 
             // Step 2 — run AI analysis in the background
+            updateAIQueue(+1);
             chrome.runtime.sendMessage({ action: 'analyzeWithAI', text, matchId: match.id }, (aiResp) => {
+              updateAIQueue(-1);
               if (chrome.runtime.lastError || !aiResp || !aiResp.success) {
                 dbg('AI analyze skipped:', aiResp && aiResp.error);
                 if (aiResp && aiResp.error === 'context_too_long') {
                   chrome.runtime.sendMessage({ action: 'storeAIAnalysis', matchId: match.id, analysis: { _error: 'context_too_long' } });
+                  _updateAITag(postEl, { _error: 'context_too_long' });
                 }
                 return;
               }
-              if (aiResp.skipped) { dbg('AI hash match, skip re-analysis:', match.id); return; }
+              if (aiResp.skipped) {
+                dbg('AI hash match (cached):', match.id);
+                _updateAITag(postEl, aiResp.analysis);
+                const storeAndSync = (cb) => {
+                  if (!match.aiAnalysis || match.aiAnalysis._error) {
+                    chrome.runtime.sendMessage({
+                      action: 'storeAIAnalysis',
+                      matchId: match.id,
+                      analysis: aiResp.analysis,
+                      textHash: aiResp.textHash || hashText(text),
+                    }, cb);
+                  } else { cb && cb(); }
+                };
+                storeAndSync(() => {
+                  const matchWithAI = { ...match, aiAnalysis: aiResp.analysis, status: 'ai_processed' };
+                  chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match: matchWithAI });
+                });
+                return;
+              }
               dbg('AI analysis:', JSON.stringify(aiResp.analysis));
 
               // Step 3 — store AI result, then PATCH the existing Notion page
@@ -1417,17 +1078,14 @@ try {
                 model: aiResp.model,
                 tokens: aiResp.tokens,
               }, () => {
-                // Re-read to get notionPageId that was stored during Step 1
-                chrome.storage.local.get(['devopsSavedMatches'], (res) => {
-                  const fresh = (res.devopsSavedMatches || []).find(m => m.id === match.id);
-                  if (fresh) {
-                    chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match: fresh }, (patchResp) => {
-                      if (chrome.runtime.lastError) return;
-                      if (patchResp && patchResp.success) dbg('notion AI patch ok:', match.id);
-                      if (patchResp && patchResp.error) dbg('notion AI patch error:', patchResp.error);
-                      refreshStorageCounts();
-                    });
-                  }
+                _updateAITag(postEl, aiResp.analysis);
+                // Use notionPageId captured from Step 1 — no storage re-read needed
+                const matchWithAI = { ...match, aiAnalysis: aiResp.analysis, status: 'ai_processed' };
+                chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match: matchWithAI }, (patchResp) => {
+                  if (chrome.runtime.lastError) return;
+                  if (patchResp && patchResp.success) dbg('notion AI patch ok:', match.id);
+                  if (patchResp && patchResp.error) dbg('notion AI patch error:', patchResp.error);
+                  refreshStorageCounts();
                 });
               });
             });
@@ -1491,6 +1149,11 @@ try {
         <span class="devops-scan-indicator__label">AI today</span>
         <span class="devops-scan-indicator__val" id="dsi-ai">—</span>
       </div>
+      <div class="devops-scan-indicator__row" id="dsi-ai-queue-row" style="display:none;">
+        <span class="devops-scan-indicator__label">AI queue</span>
+        <span class="devops-scan-indicator__val" id="dsi-ai-queue" style="color:#f9a825;">0</span>
+      </div>
+      <div id="dsi-dup-banner" style="display:none;margin-top:6px;padding:4px 6px;background:#b71c1c;color:#fff;border-radius:4px;font-size:11px;text-align:center;">⏹ Stopped: duplicates</div>
       <div class="devops-scan-indicator__last" id="dsi-last">no matches yet</div>
       <button type="button" class="devops-scan-indicator__hide" title="Hide">×</button>
     `;
@@ -1556,6 +1219,15 @@ try {
   let refreshPromptShown = false; // Track if prompt is already shown
   let duplicatesFoundInSession = 0; // Track duplicates found during current auto-scroll session
   const MAX_DUPLICATES_BEFORE_STOP = 4; // Stop auto-scroll after this many duplicates
+  let aiPending = 0;
+
+  function updateAIQueue(delta) {
+    aiPending = Math.max(0, aiPending + delta);
+    const row = document.getElementById('dsi-ai-queue-row');
+    const val = document.getElementById('dsi-ai-queue');
+    if (row) row.style.display = aiPending > 0 ? '' : 'none';
+    if (val) val.textContent = aiPending;
+  }
   
   // Speed presets configuration
   const SPEED_PRESETS = {
@@ -1792,8 +1464,10 @@ try {
     }
     
     dbg(`Duplicate limit reached (${duplicatesFoundInSession} duplicates) - showing prompt`);
-    
-    // Use shared modal factory  
+    const dupBanner = document.getElementById('dsi-dup-banner');
+    if (dupBanner) dupBanner.style.display = '';
+
+    // Use shared modal factory
     showModal({
       icon: '🔄',
       title: 'Duplicates Detected',
@@ -1812,7 +1486,9 @@ try {
           variant: 'secondary',
           onClick: () => {
             dbg("User chose to continue scrolling (reset duplicate counter)");
-            duplicatesFoundInSession = 0; // Reset counter
+            duplicatesFoundInSession = 0;
+            const b = document.getElementById('dsi-dup-banner');
+            if (b) b.style.display = 'none';
           }
         }
       ],
@@ -2419,13 +2095,35 @@ try {
     }
     
     if (message.action === 'reloadKeywords') {
-      // Reload keywords from storage when settings are updated
       dbg("Reloading keywords from settings...");
       loadCustomKeywords();
       sendResponse({ success: true });
       return true;
     }
+
+    if (message.action === 'matchSavedByOther' && message.url) {
+      _markSavedByOther(message.url, message.savedBy);
+      return true;
+    }
   });
+
+  function _markSavedByOther(url, savedBy) {
+    const POST_SELECTORS_ALL = [...POST_SELECTORS, ...POST_ROOT_SELECTORS];
+    for (const sel of POST_SELECTORS_ALL) {
+      document.querySelectorAll(sel).forEach((postEl) => {
+        const postUrl = getPostUrl(postEl);
+        if (postUrl !== url) return;
+        if (postEl.querySelector('.devops-scan-saved-by-other')) return;
+        const bar = postEl.querySelector('.devops-scan-bar');
+        if (!bar) return;
+        const badge = document.createElement('span');
+        badge.className = 'devops-scan-saved-by-other';
+        badge.textContent = savedBy ? `👤 saved by ${savedBy}` : '👤 saved by another user';
+        badge.style.cssText = 'font-size:11px;color:#1565c0;background:#e3f2fd;border-radius:4px;padding:2px 6px;margin-left:6px;';
+        bar.appendChild(badge);
+      });
+    }
+  }
 
   // ---- LinkedIn Jobs Search Scanner (/jobs/search) ---------------------------
 

@@ -102,6 +102,16 @@ function safeJsonParse(jsonString, defaultValue = null) {
 }
 
 /**
+ * Normalize text: lowercase + collapse all whitespace variants (including
+ * non-breaking spaces common in LinkedIn's DOM) to single spaces.
+ * @param {string} s
+ * @returns {string}
+ */
+function normalizeText(s) {
+  return (s || '').toLowerCase().replace(/[\s ]+/g, ' ').trim();
+}
+
+/**
  * Check if extension context is still valid
  * @returns {boolean} True if context is valid
  */

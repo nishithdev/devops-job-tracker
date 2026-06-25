@@ -298,6 +298,20 @@
         font-size: 10px;
         font-weight: 600;
       }
+      .server-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #9e9e9e;
+        flex-shrink: 0;
+        transition: background 0.3s;
+      }
+      .server-dot.online  { background: #69f0ae; }
+      .server-dot.offline { background: #ef9a9a; }
+      .server-label {
+        font-size: 11px;
+        opacity: 0.85;
+      }
       .notion-error-tooltip {
         display: none;
         position: absolute;
@@ -327,6 +341,10 @@
       <div class="status-bar">
         <div class="status-indicator idle" id="status-indicator"></div>
         <span id="status-text">Idle</span>
+        <span id="server-status-wrap" style="display:none;margin-left:auto;align-items:center;gap:5px;">
+          <div class="server-dot" id="server-dot"></div>
+          <span class="server-label" id="server-label">Server</span>
+        </span>
       </div>
     </div>
 

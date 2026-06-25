@@ -1,0 +1,17 @@
+{
+  "name": "devops-scanner-server",
+  "version": "1.0.0",
+  "description": "Local coordination server for LinkedIn DevOps Scanner Chrome extension",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "sqlite3": "^6.0.1",
+    "ws": "^8.16.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

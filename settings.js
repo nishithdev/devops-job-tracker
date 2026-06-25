@@ -460,12 +460,11 @@ async function runBulkAnalysis(matchFilter = null) {
       await new Promise(r =>
         chrome.runtime.sendMessage({ action: 'storeAIAnalysis', matchId: match.id, analysis: aiResp.analysis, textHash: aiResp.textHash, timeToProcess: aiResp.timeToProcess, model: aiResp.model, tokens: aiResp.tokens, missingFields: match._missingFields || null }, r)
       );
-      // Re-read from storage so notionPageId is included, then PATCH the existing Notion page
-      const fresh = await new Promise(r => chrome.storage.local.get(['devopsSavedMatches'], r));
-      const freshMatch = (fresh.devopsSavedMatches || []).find(m => m.id === match.id);
-      if (freshMatch) {
+      // PATCH Notion page with AI fields — notionPageId already on match from prior sync
+      const matchWithAI = { ...match, aiAnalysis: aiResp.analysis };
+      {
         const syncResp = await new Promise(r =>
-          chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match: freshMatch }, r)
+          chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match: matchWithAI }, r)
         );
         if (syncResp && syncResp.error) {
           logLine(`[${done + 1}/${pending.length}] Notion sync error for "${label}": ${syncResp.error}`, 'error');
@@ -512,20 +511,61 @@ document.getElementById('btn-bulk-stop').addEventListener('click', () => {
   document.getElementById('bulk-progress-text').textContent = 'Stopping after current match…';
 });
 
+// ---- Local server ------------------------------------------------------------
+
+function loadServerSettings() {
+  chrome.storage.local.get(['localServerUrl'], (result) => {
+    if (result.localServerUrl) document.getElementById('local-server-url').value = result.localServerUrl;
+  });
+}
+
+document.getElementById('btn-save-server').addEventListener('click', () => {
+  const url = document.getElementById('local-server-url').value.trim().replace(/\/$/, '');
+  const status = document.getElementById('server-status');
+  chrome.storage.local.set({ localServerUrl: url || null }, () => {
+    status.textContent = url ? `✅ Server URL saved: ${url}` : '🗑️ Server URL cleared.';
+    status.style.color = '#2e7d32';
+    setTimeout(() => { status.textContent = ''; }, 3000);
+  });
+});
+
+document.getElementById('btn-test-server').addEventListener('click', async () => {
+  const url = document.getElementById('local-server-url').value.trim().replace(/\/$/, '');
+  const status = document.getElementById('server-status');
+  if (!url) { status.textContent = '⚠️ Enter a server URL first.'; status.style.color = '#e65100'; return; }
+  status.textContent = 'Testing…'; status.style.color = '#757575';
+  try {
+    const r = await fetch(`${url}/health`);
+    if (r.ok) {
+      const data = await r.json();
+      status.textContent = `✅ Connected — ${data.matches} matches, ${data.aiCacheSize} AI cache entries, ${data.wsClients} active clients`;
+      status.style.color = '#2e7d32';
+    } else {
+      status.textContent = `⚠️ Server returned ${r.status}`;
+      status.style.color = '#e65100';
+    }
+  } catch (e) {
+    status.textContent = `❌ Cannot reach server: ${e.message}`;
+    status.style.color = '#c62828';
+  }
+});
+
 // ---- Notion sync -------------------------------------------------------------
 
 function loadNotionSettings() {
-  chrome.storage.local.get(['notionToken', 'notionDatabaseId'], (result) => {
+  chrome.storage.local.get(['notionToken', 'notionDatabaseId', 'notionUserName'], (result) => {
     if (result.notionToken) document.getElementById('notion-token').value = result.notionToken;
     if (result.notionDatabaseId) document.getElementById('notion-database-id').value = result.notionDatabaseId;
+    if (result.notionUserName) document.getElementById('notion-user-name').value = result.notionUserName;
   });
 }
 
 document.getElementById('btn-save-notion').addEventListener('click', () => {
   const token = document.getElementById('notion-token').value.trim();
   const dbId = document.getElementById('notion-database-id').value.trim();
+  const userName = document.getElementById('notion-user-name').value.trim();
   const status = document.getElementById('notion-status');
-  chrome.storage.local.set({ notionToken: token || null, notionDatabaseId: dbId || null }, () => {
+  chrome.storage.local.set({ notionToken: token || null, notionDatabaseId: dbId || null, notionUserName: userName || null }, () => {
     status.textContent = (token && dbId) ? '✅ Notion credentials saved.' : '🗑️ Notion credentials cleared.';
     status.style.color = '#2e7d32';
     setTimeout(() => { status.textContent = ''; }, 3000);
@@ -571,4 +611,5 @@ document.getElementById('btn-test-notion').addEventListener('click', () => {
 
 loadSettings();
 loadOllamaSettings();
+loadServerSettings();
 loadNotionSettings();

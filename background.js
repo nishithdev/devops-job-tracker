@@ -47,7 +47,7 @@ function createWhatsNewNotification(oldVersion, newVersion) {
   });
 }
 
-// ---- Scheduled re-scan (stale post detection) --------------------------------
+// ---- Scheduled re-scan (stale post detection + Notion cache rebuild) ----------
 
 const RESCAN_ALARM = 'devops-rescan-stale';
 const RESCAN_PERIOD_MINUTES = 24 * 60;
@@ -60,11 +60,13 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 async function runStaleCheck() {
-  const result = await chrome.storage.local.get(['devopsSavedMatches']);
-  const matches = result.devopsSavedMatches || [];
+  const stored = await chrome.storage.local.get(['devopsSavedMatches', 'notionToken', 'notionDatabaseId']);
+  const matches = stored.devopsSavedMatches || [];
   if (matches.length === 0) return;
 
   let changed = false;
+
+  // 1. Stale LinkedIn post detection
   for (const match of matches) {
     if (!match.url) continue;
     if (match.status === 'rejected' || match.stale) continue;
@@ -80,153 +82,275 @@ async function runStaleCheck() {
     }
   }
 
+  // 2. Notion cache rebuild + dedup (only if Notion configured)
+  if (stored.notionToken && stored.notionDatabaseId) {
+    const notionPages = await fetchAllNotionPages(stored.notionToken, stored.notionDatabaseId);
+    if (notionPages) {
+      // Build URL → page map (keep oldest page per URL for dedup)
+      const urlToPage = new Map();
+      const duplicatePageIds = [];
+      for (const page of notionPages) {
+        const url = page.properties?.URL?.url;
+        if (!url) continue;
+        if (urlToPage.has(url)) {
+          // Keep older (lower created_time), archive newer
+          const existing = urlToPage.get(url);
+          const existingTime = new Date(existing.created_time).getTime();
+          const thisTime = new Date(page.created_time).getTime();
+          if (thisTime > existingTime) {
+            duplicatePageIds.push(page.id);
+          } else {
+            duplicatePageIds.push(existing.id);
+            urlToPage.set(url, page);
+          }
+        } else {
+          urlToPage.set(url, page);
+        }
+      }
+
+      // Archive duplicate Notion pages
+      for (const pageId of duplicatePageIds) {
+        try {
+          await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+            method: 'PATCH',
+            headers: {
+              'Authorization': `Bearer ${stored.notionToken}`,
+              'Content-Type': 'application/json',
+              'Notion-Version': '2022-06-28',
+            },
+            body: JSON.stringify({ archived: true }),
+          });
+          console.log('[DevOps Scanner] Archived duplicate Notion page:', pageId);
+        } catch (_) {}
+      }
+
+      // Rebuild local notionPageId map from canonical pages
+      for (const match of matches) {
+        if (!match.url || match.notionDeleted) continue;
+        const page = urlToPage.get(match.url);
+        if (page && match.notionPageId !== page.id) {
+          match.notionPageId = page.id;
+          delete match.notionDeleted;
+          changed = true;
+        }
+      }
+    }
+  }
+
   if (changed) {
     await chrome.storage.local.set({ devopsSavedMatches: matches });
   }
 }
 
-// ---- Single message listener (reloadKeywords + Notion sync) ------------------
-
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.action === 'reloadKeywords') {
-    chrome.tabs.query({ url: 'https://www.linkedin.com/*' }, (tabs) => {
-      tabs.forEach(tab => {
-        chrome.tabs.sendMessage(tab.id, { action: 'reloadKeywords' }, () => {
-          if (chrome.runtime.lastError) {
-            console.error('Failed to reload keywords in tab', tab.id, chrome.runtime.lastError);
-          }
-        });
-      });
-    });
-    sendResponse({ success: true });
-    return;
-  }
-
-  if (message.action === 'syncMatchToNotion') {
-    const toNotionStatus = (s) => {
-      if (!s || s === 'new' || s === 'interested') return 'Not started';
-      if (s === 'ai_processed') return 'AI Processed';
-      if (s === 'applied' || s === 'interviewing') return 'In progress';
-      return 'Done'; // offer, rejected, not-interested
-    };
-    chrome.storage.local.get(['notionToken', 'notionDatabaseId'], (result) => {
-      const { notionToken, notionDatabaseId } = result;
-      if (!notionToken || !notionDatabaseId) { sendResponse({ skipped: true }); return; }
-
-      const match = message.match;
-      const dateStr = match.timestamp
-        ? new Date(match.timestamp).toISOString().split('T')[0]
-        : new Date().toISOString().split('T')[0];
-
-      const richText = (val) => {
-        if (val == null || val === false) return [];
-        const str = typeof val === 'string' ? val : String(val);
-        if (!str) return [];
-        const chunks = [];
-        for (let i = 0; i < str.length; i += 2000) {
-          chunks.push({ text: { content: str.substring(i, i + 2000) } });
-        }
-        return chunks;
-      };
-
-      const properties = {
-        Name: {
-          title: [{ text: { content: match.author || 'Unknown Recruiter' } }],
-        },
-        ...((match.devopsKeywords || []).length > 0 && { Keywords: { rich_text: richText(match.devopsKeywords.join(', ')) } }),
-        Score: {
-          number: match.relevanceScore ?? 0,
-        },
-        Status: {
-          status: { name: toNotionStatus(match.status) },
-        },
-        ...((match.emails || []).length > 0 && { Emails: { rich_text: richText(match.emails.join(', ')) } }),
-        Date: {
-          date: { start: dateStr },
-        },
-        Snippet: {
-          rich_text: richText(match.fullText || match.snippet || ''),
-        },
-      };
-
-      if (match.url) properties.URL = { url: match.url };
-
-      // AI-extracted fields (optional — only present if Ollama ran successfully)
-      const ai = match.aiAnalysis;
-      if (ai) {
-        const titles = Array.isArray(ai.jobTitles) ? ai.jobTitles.filter(Boolean) : (ai.jobTitle ? [ai.jobTitle] : []);
-        if (titles.length) properties['Job Title'] = { rich_text: richText(titles.join(', ')) };
-        properties['VISA'] = { rich_text: richText(ai.visaSponsorship || 'Not mentioned') };
-        if (ai.confidence !== undefined) properties['AI Confidence'] = { number: ai.confidence };
-      }
-      if (match.aiTimeToProcess !== undefined) properties['AI Time (ms)'] = { number: match.aiTimeToProcess };
-      if (match.aiModel) properties['AI Model'] = { rich_text: richText(match.aiModel) };
-      if (match.aiTokens !== undefined) properties['Tokens'] = { number: match.aiTokens };
-
-      const saveNotionStatus = (entry) =>
-        chrome.storage.local.set({ notionLastSync: entry });
-
-      // If we already have a Notion page ID for this match, PATCH it instead of creating a new page
-      const notionPageId = match.notionPageId;
-      const apiUrl    = notionPageId
-        ? `https://api.notion.com/v1/pages/${notionPageId}`
-        : 'https://api.notion.com/v1/pages';
-      const apiMethod = notionPageId ? 'PATCH' : 'POST';
-      const body      = notionPageId
-        ? { properties }
-        : { parent: { database_id: notionDatabaseId }, properties };
-
-      fetch(apiUrl, {
-        method: apiMethod,
+// Fetches all pages from a Notion database (handles pagination).
+async function fetchAllNotionPages(token, databaseId) {
+  const pages = [];
+  let cursor;
+  try {
+    do {
+      const body = cursor ? { start_cursor: cursor } : {};
+      const r = await fetch(`https://api.notion.com/v1/databases/${databaseId}/query`, {
+        method: 'POST',
         headers: {
-          'Authorization': `Bearer ${notionToken}`,
+          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
           'Notion-Version': '2022-06-28',
         },
         body: JSON.stringify(body),
-      })
-        .then(async r => {
-          if (r.ok) {
-            const data = await r.json();
-            saveNotionStatus({ ok: true, ts: Date.now(), matchId: match.id });
-            // On first creation, save the Notion page ID back into the match
-            if (data.id) {
-              chrome.storage.local.get(['devopsSavedMatches'], (res) => {
-                const matches = res.devopsSavedMatches || [];
-                const m = matches.find(m => m.id === match.id);
-                if (m) {
-                  m.notionPageId = data.id;
-                  delete m.notionDeleted;
-                  chrome.storage.local.set({ devopsSavedMatches: matches });
-                }
-              });
-            }
-            sendResponse({ success: true, notionPageId: data.id });
-          } else {
-            const t = await r.text();
-            // Page was deleted in Notion — mark locally and don't retry as PATCH
-            if (r.status === 404 && notionPageId) {
-              chrome.storage.local.get(['devopsSavedMatches'], (res) => {
-                const matches = res.devopsSavedMatches || [];
-                const m = matches.find(m => m.id === match.id);
-                if (m) {
-                  m.notionDeleted = true;
-                  chrome.storage.local.set({ devopsSavedMatches: matches });
-                }
-              });
-            }
-            saveNotionStatus({ ok: false, ts: Date.now(), error: `${r.status}: ${t}` });
-            sendResponse({ error: `${r.status}: ${t}` });
-          }
-        })
-        .catch(err => {
-          saveNotionStatus({ ok: false, ts: Date.now(), error: err.message });
-          sendResponse({ error: err.message });
-        });
+      });
+      if (!r.ok) return null;
+      const data = await r.json();
+      pages.push(...(data.results || []));
+      cursor = data.has_more ? data.next_cursor : null;
+    } while (cursor);
+    return pages;
+  } catch (_) {
+    return null;
+  }
+}
+
+// Queries Notion for an existing page matching a LinkedIn post URL.
+// Returns the page object or null.
+async function queryNotionByUrl(url, token, databaseId) {
+  try {
+    const r = await fetch(`https://api.notion.com/v1/databases/${databaseId}/query`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28',
+      },
+      body: JSON.stringify({
+        filter: { property: 'URL', url: { equals: url } },
+        page_size: 1,
+      }),
     });
-    return true; // keep channel open for async response
+    if (!r.ok) return null;
+    const data = await r.json();
+    return data.results?.[0] || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// ---- Single message dispatch table ------------------------------------------
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  switch (message.action) {
+    case 'reloadKeywords':   return handleReloadKeywords(message, sendResponse);
+    case 'syncMatchToNotion': return handleSyncMatchToNotion(message, sendResponse);
+    case 'analyzeWithAI':    return handleAnalyzeWithAI(message, sendResponse);
+    case 'saveMatch':        return handleSaveMatch(message, sendResponse);
+    case 'updateMatchStatus': return handleUpdateMatchStatus(message, sendResponse);
+    case 'storeAIAnalysis':  return handleStoreAIAnalysis(message, sendResponse);
   }
 });
+
+function handleReloadKeywords(message, sendResponse) {
+  chrome.tabs.query({ url: 'https://www.linkedin.com/*' }, (tabs) => {
+    tabs.forEach(tab => {
+      chrome.tabs.sendMessage(tab.id, { action: 'reloadKeywords' }, () => {
+        if (chrome.runtime.lastError) {
+          console.error('Failed to reload keywords in tab', tab.id, chrome.runtime.lastError);
+        }
+      });
+    });
+  });
+  sendResponse({ success: true });
+}
+
+function handleSyncMatchToNotion(message, sendResponse) {
+  _syncMatchToNotion(message.match).then(sendResponse);
+  return true; // keep channel open for async response
+}
+
+async function _syncMatchToNotion(match) {
+  const stored = await new Promise(r =>
+    chrome.storage.local.get(['notionToken', 'notionDatabaseId', 'notionUserName'], r)
+  );
+  const { notionToken, notionDatabaseId, notionUserName } = stored;
+  if (!notionToken || !notionDatabaseId) return { skipped: true };
+
+  const saveNotionStatus = (entry) => chrome.storage.local.set({ notionLastSync: entry });
+
+  const toNotionStatus = (s) => {
+    if (!s || s === 'new' || s === 'interested') return 'Not started';
+    if (s === 'ai_processed') return 'AI Processed';
+    if (s === 'applied' || s === 'interviewing') return 'In progress';
+    return 'Done';
+  };
+
+  const richText = (val) => {
+    if (val == null || val === false) return [];
+    const str = typeof val === 'string' ? val : String(val);
+    if (!str) return [];
+    const chunks = [];
+    for (let i = 0; i < str.length; i += 2000) {
+      chunks.push({ text: { content: str.substring(i, i + 2000) } });
+    }
+    return chunks;
+  };
+
+  const dateStr = match.timestamp
+    ? new Date(match.timestamp).toISOString().split('T')[0]
+    : new Date().toISOString().split('T')[0];
+
+  const buildProperties = () => {
+    const props = {
+      Name:   { title: [{ text: { content: match.author || 'Unknown Recruiter' } }] },
+      Score:  { number: match.relevanceScore ?? 0 },
+      Status: { status: { name: toNotionStatus(match.status) } },
+      Date:   { date: { start: dateStr } },
+      Snippet: { rich_text: richText(match.fullText || match.snippet || '') },
+    };
+    if ((match.devopsKeywords || []).length > 0) props.Keywords = { rich_text: richText(match.devopsKeywords.join(', ')) };
+    if ((match.emails || []).length > 0) props.Emails = { rich_text: richText(match.emails.join(', ')) };
+    if (match.url) props.URL = { url: match.url };
+    if (notionUserName) props['Saved By'] = { rich_text: richText(notionUserName) };
+
+    const ai = match.aiAnalysis;
+    if (ai) {
+      const titles = Array.isArray(ai.jobTitles) ? ai.jobTitles.filter(Boolean) : (ai.jobTitle ? [ai.jobTitle] : []);
+      if (titles.length) props['Job Title'] = { rich_text: richText(titles.join(', ')) };
+      props['VISA'] = { rich_text: richText(ai.visaSponsorship || 'Not mentioned') };
+      if (ai.confidence !== undefined) props['AI Confidence'] = { number: ai.confidence };
+    }
+    if (match.aiTimeToProcess !== undefined) props['AI Time (ms)'] = { number: match.aiTimeToProcess };
+    if (match.aiModel) props['AI Model'] = { rich_text: richText(match.aiModel) };
+    if (match.aiTokens !== undefined) props['Tokens'] = { number: match.aiTokens };
+    return props;
+  };
+
+  // Resolve notionPageId: use local cache, or query Notion by URL (multi-user dedup)
+  let notionPageId = match.notionPageId;
+  if (!notionPageId && match.url) {
+    const existing = await queryNotionByUrl(match.url, notionToken, notionDatabaseId);
+    if (existing) {
+      notionPageId = existing.id;
+      // Store it locally so future calls skip the query
+      chrome.storage.local.get(['devopsSavedMatches'], (res) => {
+        const matches = res.devopsSavedMatches || [];
+        const m = matches.find(m => m.id === match.id);
+        if (m) { m.notionPageId = notionPageId; delete m.notionDeleted; chrome.storage.local.set({ devopsSavedMatches: matches }); }
+      });
+    }
+  }
+
+  const properties = buildProperties();
+  const apiUrl    = notionPageId ? `https://api.notion.com/v1/pages/${notionPageId}` : 'https://api.notion.com/v1/pages';
+  const apiMethod = notionPageId ? 'PATCH' : 'POST';
+  const body      = notionPageId ? { properties } : { parent: { database_id: notionDatabaseId }, properties };
+
+  try {
+    const r = await fetch(apiUrl, {
+      method: apiMethod,
+      headers: {
+        'Authorization': `Bearer ${notionToken}`,
+        'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28',
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (r.ok) {
+      const data = await r.json();
+      saveNotionStatus({ ok: true, ts: Date.now(), matchId: match.id });
+      if (data.id) {
+        chrome.storage.local.get(['devopsSavedMatches', 'localServerUrl'], (res) => {
+          const matches = res.devopsSavedMatches || [];
+          const m = matches.find(m => m.id === match.id);
+          if (m) { m.notionPageId = data.id; delete m.notionDeleted; chrome.storage.local.set({ devopsSavedMatches: matches }); }
+          // Relay notionPageId to server so other users can find it on dedup
+          if (res.localServerUrl && match.url) {
+            fetch(`${res.localServerUrl}/notion-page-id`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ url: match.url, matchId: match.id, notionPageId: data.id }),
+            }).catch(() => {});
+          }
+        });
+      }
+      return { success: true, notionPageId: data.id };
+    }
+
+    const errText = await r.text();
+    // 404 on PATCH = page deleted in Notion — clear local ID and retry as POST
+    if (r.status === 404 && notionPageId) {
+      chrome.storage.local.get(['devopsSavedMatches'], (res) => {
+        const matches = res.devopsSavedMatches || [];
+        const m = matches.find(m => m.id === match.id);
+        if (m) { delete m.notionPageId; delete m.notionDeleted; chrome.storage.local.set({ devopsSavedMatches: matches }); }
+      });
+      // Retry once as a fresh POST
+      return _syncMatchToNotion({ ...match, notionPageId: undefined });
+    }
+    saveNotionStatus({ ok: false, ts: Date.now(), error: `${r.status}: ${errText}` });
+    return { error: `${r.status}: ${errText}` };
+  } catch (err) {
+    saveNotionStatus({ ok: false, ts: Date.now(), error: err.message });
+    return { error: err.message };
+  }
+}
 
 // ---- Text hash (djb2) -------------------------------------------------------
 function hashText(str) {
@@ -313,113 +437,214 @@ async function _runOllamaRequest(text) {
   }
 }
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.action === 'analyzeWithAI') {
-    const text = message.text || '';
-    const incomingHash = hashText(text);
+function handleAnalyzeWithAI(message, sendResponse) {
+  const text = message.text || '';
+  const incomingHash = hashText(text);
 
-    // Skip if caller supplied matchId and hash matches stored hash
+  chrome.storage.local.get(['localServerUrl', 'ollamaUrl', 'ollamaModel', 'devopsSavedMatches'], async (s) => {
+    // Check local cache first regardless of server
     if (message.matchId) {
-      chrome.storage.local.get(['devopsSavedMatches'], (res) => {
-        const match = (res.devopsSavedMatches || []).find(m => m.id === message.matchId);
-        if (match && match.aiTextHash === incomingHash && match.aiAnalysis && !match.aiAnalysis._error) {
-          sendResponse({ success: true, analysis: match.aiAnalysis, skipped: true });
-          return;
-        }
-        _enqueueAI(text).then(result => {
-          if (result.success) result.textHash = incomingHash;
-          sendResponse(result);
-        });
-      });
-    } else {
-      _enqueueAI(text).then(result => {
-        if (result.success) result.textHash = incomingHash;
-        sendResponse(result);
-      });
-    }
-    return true;
-  }
-});
-
-// ---- Atomic saveMatch (prevents multi-tab race on devopsSavedMatches) -------
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.action === 'saveMatch') {
-    chrome.storage.local.get(['devopsSavedMatches'], (result) => {
-      const matches = result.devopsSavedMatches || [];
-      const match = message.match;
-      if (match.url && matches.some(m => m.url === match.url)) {
-        sendResponse({ duplicate: true });
+      const match = (s.devopsSavedMatches || []).find(m => m.id === message.matchId);
+      if (match && match.aiTextHash === incomingHash && match.aiAnalysis && !match.aiAnalysis._error) {
+        sendResponse({ success: true, analysis: match.aiAnalysis, skipped: true });
         return;
       }
-      matches.unshift(match);
-      if (matches.length > 500) matches.length = 500;
-      chrome.storage.local.set({ devopsSavedMatches: matches }, () => {
-        if (chrome.runtime.lastError) {
-          sendResponse({ error: chrome.runtime.lastError.message });
-        } else {
-          sendResponse({ saved: true });
-        }
-      });
+    }
+
+    // Server path: shared queue + hash cache
+    if (s.localServerUrl) {
+      try {
+        const r = await fetch(`${s.localServerUrl}/ai`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text, hash: incomingHash,
+            ollamaUrl: s.ollamaUrl || 'http://localhost:11434',
+            ollamaModel: s.ollamaModel || 'gemma3',
+          }),
+        });
+        const result = await r.json();
+        if (result.success) result.textHash = incomingHash;
+        sendResponse(result);
+        return;
+      } catch (_) {
+        // Fall through to local Ollama
+      }
+    }
+
+    // Local fallback
+    _enqueueAI(text).then(result => {
+      if (result.success) result.textHash = incomingHash;
+      sendResponse(result);
     });
-    return true;
+  });
+  return true;
+}
+
+// ---- Atomic saveMatch (prevents multi-tab race on devopsSavedMatches) -------
+function handleSaveMatch(message, sendResponse) {
+  chrome.storage.local.get(['localServerUrl', 'notionUserName', 'devopsSavedMatches'], async (s) => {
+    const match = message.match;
+
+    // Server path: authoritative dedup
+    if (s.localServerUrl) {
+      try {
+        const r = await fetch(`${s.localServerUrl}/save`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ match, userName: s.notionUserName || null }),
+        });
+        const data = await r.json();
+
+        if (data.duplicate) {
+          // Another user already saved this — link notionPageId locally if server has it
+          if (data.notionPageId) {
+            const matches = s.devopsSavedMatches || [];
+            const m = matches.find(m => m.url === match.url || m.id === match.id);
+            if (m) {
+              m.notionPageId = data.notionPageId;
+              chrome.storage.local.set({ devopsSavedMatches: matches });
+            }
+          }
+          sendResponse({ duplicate: true });
+          return;
+        }
+        // Server accepted it — save locally too
+        _saveLocalMatch(match, s.devopsSavedMatches || [], sendResponse);
+        return;
+      } catch (_) {
+        // Fall through to local save
+      }
+    }
+
+    // Local-only fallback
+    _saveLocalMatch(match, s.devopsSavedMatches || [], sendResponse);
+  });
+  return true;
+}
+
+function _saveLocalMatch(match, existing, sendResponse) {
+  if (match.url && existing.some(m => m.url === match.url)) {
+    sendResponse({ duplicate: true });
+    return;
   }
-});
+  existing.unshift(match);
+  if (existing.length > 500) existing.length = 500;
+  chrome.storage.local.set({ devopsSavedMatches: existing }, () => {
+    if (chrome.runtime.lastError) {
+      sendResponse({ error: chrome.runtime.lastError.message });
+    } else {
+      sendResponse({ saved: true });
+    }
+  });
+}
 
 // ---- Atomic updateMatchStatus (prevents multi-tab race on status writes) ----
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.action === 'updateMatchStatus') {
-    chrome.storage.local.get(['devopsSavedMatches'], (result) => {
-      const matches = result.devopsSavedMatches || [];
-      const m = matches.find(entry =>
-        (message.matchId && entry.id === message.matchId) ||
-        (message.url && entry.url === message.url) ||
-        (message.snippetPrefix && entry.snippet && entry.snippet.startsWith(message.snippetPrefix))
-      );
-      if (!m) { sendResponse({ error: 'not found' }); return; }
-      m.status = message.status;
-      chrome.storage.local.set({ devopsSavedMatches: matches }, () => {
-        sendResponse({ success: true });
-      });
+function handleUpdateMatchStatus(message, sendResponse) {
+  chrome.storage.local.get(['devopsSavedMatches'], (result) => {
+    const matches = result.devopsSavedMatches || [];
+    const m = matches.find(entry =>
+      (message.matchId && entry.id === message.matchId) ||
+      (message.url && entry.url === message.url) ||
+      (message.snippetPrefix && entry.snippet && entry.snippet.startsWith(message.snippetPrefix))
+    );
+    if (!m) { sendResponse({ error: 'not found' }); return; }
+    m.status = message.status;
+    chrome.storage.local.set({ devopsSavedMatches: matches }, () => {
+      sendResponse({ success: true });
     });
-    return true;
-  }
-});
+  });
+  return true;
+}
 
 // ---- Store AI analysis back into the saved match ----------------------------
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.action === 'storeAIAnalysis') {
-    chrome.storage.local.get(['devopsSavedMatches'], (result) => {
-      const matches = result.devopsSavedMatches || [];
-      const match = matches.find(m => m.id === message.matchId);
-      if (!match) { sendResponse({ error: 'match not found' }); return; }
+function handleStoreAIAnalysis(message, sendResponse) {
+  chrome.storage.local.get(['devopsSavedMatches'], (result) => {
+    const matches = result.devopsSavedMatches || [];
+    const match = matches.find(m => m.id === message.matchId);
+    if (!match) { sendResponse({ error: 'match not found' }); return; }
 
-      const incoming = message.analysis || {};
-      const missingFields = message.missingFields; // null = full replace, array = merge only these
-      if (missingFields && missingFields.length && match.aiAnalysis && !match.aiAnalysis._error) {
-        // Merge only the fields that were missing — leave others intact
-        const existing = match.aiAnalysis;
-        if (missingFields.includes('Job Title')) {
-          existing.jobTitles = incoming.jobTitles;
-          existing.jobTitle  = incoming.jobTitle;
-        }
-        if (missingFields.includes('VISA'))         existing.visaSponsorship = incoming.visaSponsorship;
-        if (missingFields.includes('AI Confidence')) existing.confidence      = incoming.confidence;
-        match.aiAnalysis = existing;
-      } else {
-        match.aiAnalysis = incoming;
+    const incoming = message.analysis || {};
+    const missingFields = message.missingFields; // null = full replace, array = merge only these
+    if (missingFields && missingFields.length && match.aiAnalysis && !match.aiAnalysis._error) {
+      const existing = match.aiAnalysis;
+      if (missingFields.includes('Job Title')) {
+        existing.jobTitles = incoming.jobTitles;
+        existing.jobTitle  = incoming.jobTitle;
       }
-      delete match._missingFields;
-      match.aiAnalyzedAt = Date.now();
-      if (message.textHash) match.aiTextHash = message.textHash;
-      if (message.timeToProcess !== undefined) match.aiTimeToProcess = message.timeToProcess;
-      if (message.model) match.aiModel = message.model;
-      if (!match.status || match.status === 'new') match.status = 'ai_processed';
-      if (message.tokens !== undefined) match.aiTokens = message.tokens;
-      chrome.storage.local.set({ devopsSavedMatches: matches }, () => {
-        sendResponse({ success: true });
-      });
+      if (missingFields.includes('VISA'))          existing.visaSponsorship = incoming.visaSponsorship;
+      if (missingFields.includes('AI Confidence')) existing.confidence      = incoming.confidence;
+      match.aiAnalysis = existing;
+    } else {
+      match.aiAnalysis = incoming;
+    }
+    delete match._missingFields;
+    match.aiAnalyzedAt = Date.now();
+    if (message.textHash) match.aiTextHash = message.textHash;
+    if (message.timeToProcess !== undefined) match.aiTimeToProcess = message.timeToProcess;
+    if (message.model) match.aiModel = message.model;
+    if (!match.status || match.status === 'new') match.status = 'ai_processed';
+    if (message.tokens !== undefined) match.aiTokens = message.tokens;
+    chrome.storage.local.set({ devopsSavedMatches: matches }, () => {
+      sendResponse({ success: true });
     });
-    return true;
+  });
+  return true;
+}
+
+// ---- WebSocket client (real-time cross-user match push) ---------------------
+
+let _ws = null;
+let _wsReconnectTimer = null;
+
+function _connectWS(serverUrl) {
+  if (_ws && (_ws.readyState === WebSocket.CONNECTING || _ws.readyState === WebSocket.OPEN)) return;
+  const wsUrl = serverUrl.replace(/^http/, 'ws') + '/ws';
+  try {
+    _ws = new WebSocket(wsUrl);
+  } catch (_) { return; }
+
+  _ws.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data);
+      if (msg.action === 'newMatch' && msg.url) {
+        chrome.tabs.query({ url: 'https://www.linkedin.com/*' }, (tabs) => {
+          tabs.forEach(tab => {
+            chrome.tabs.sendMessage(tab.id, {
+              action: 'matchSavedByOther',
+              url: msg.url,
+              savedBy: msg.savedBy || null,
+            }, () => { chrome.runtime.lastError; /* suppress */ });
+          });
+        });
+      }
+    } catch (_) {}
+  };
+
+  _ws.onclose = () => {
+    _ws = null;
+    clearTimeout(_wsReconnectTimer);
+    _wsReconnectTimer = setTimeout(() => {
+      chrome.storage.local.get(['localServerUrl'], (s) => {
+        if (s.localServerUrl) _connectWS(s.localServerUrl);
+      });
+    }, 5000);
+  };
+
+  _ws.onerror = () => _ws && _ws.close();
+}
+
+// Connect on startup if server URL is configured
+chrome.storage.local.get(['localServerUrl'], (s) => {
+  if (s.localServerUrl) _connectWS(s.localServerUrl);
+});
+
+// Reconnect when server URL changes via settings
+chrome.storage.onChanged.addListener((changes) => {
+  if (changes.localServerUrl) {
+    if (_ws) { _ws.onclose = null; _ws.close(); _ws = null; }
+    clearTimeout(_wsReconnectTimer);
+    if (changes.localServerUrl.newValue) _connectWS(changes.localServerUrl.newValue);
   }
 });
 
