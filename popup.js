@@ -64,12 +64,27 @@ function updateStats() {
     'devopsScanCount',
     'devopsScanAnalyzed',
     'devopsSavedMatches',
+    'devopsScanLastMatch',
     'autoScrollState',
     'speedPreset'
   ]).then((res) => {
     // Update stats
     document.getElementById('analyzed').textContent = res.devopsScanAnalyzed || 0;
     document.getElementById('matches').textContent = res.devopsScanCount || 0;
+
+    // Show last matched keywords
+    const lastMatchEl = document.getElementById('last-match-keywords');
+    if (lastMatchEl) {
+      const lm = res.devopsScanLastMatch;
+      if (lm) {
+        const parts = [];
+        if (lm.devopsHits && lm.devopsHits.length) parts.push(lm.devopsHits.join(', '));
+        if (lm.hiringHit) parts.push(lm.hiringHit);
+        lastMatchEl.textContent = parts.length ? `Last: ${parts.join(' + ')}` : '';
+      } else {
+        lastMatchEl.textContent = '';
+      }
+    }
     const savedMatches = res.devopsSavedMatches || [];
     document.getElementById('saved').textContent = savedMatches.length;
 
@@ -230,16 +245,16 @@ function checkFirstTimeUser() {
 // Check for version update (What's New)
 function checkVersionUpdate() {
   const currentVersion = chrome.runtime.getManifest().version;
-  safeStorageGet(['lastVersion']).then((result) => {
+  safeStorageGet(['lastVersion', 'showWhatsNew']).then((result) => {
     const lastVersion = result.lastVersion;
-    
     if (lastVersion && lastVersion !== currentVersion) {
-      // Version updated - show what's new
-      // We'll implement this in the next step
-      safeStorageSet({ lastVersion: currentVersion });
+      safeStorageSet({ lastVersion: currentVersion, showWhatsNew: false });
+      chrome.tabs.create({ url: chrome.runtime.getURL('whats-new.html') });
     } else if (!lastVersion) {
-      // First install
       safeStorageSet({ lastVersion: currentVersion });
+    } else if (result.showWhatsNew) {
+      safeStorageSet({ showWhatsNew: false });
+      chrome.tabs.create({ url: chrome.runtime.getURL('whats-new.html') });
     }
   }).catch((error) => {
     console.error('Error checking version update:', error);

@@ -666,6 +666,8 @@ function handleStoreAIAnalysis(message, sendResponse) {
 
 let _ws = null;
 let _wsReconnectTimer = null;
+let _wsWasConnected = false;
+let _wsReconnectAttempts = 0;
 
 function _connectWS(serverUrl) {
   if (_ws && (_ws.readyState === WebSocket.CONNECTING || _ws.readyState === WebSocket.OPEN)) return;
@@ -691,7 +693,36 @@ function _connectWS(serverUrl) {
     } catch (_) {}
   };
 
+  _ws.onopen = () => {
+    _wsWasConnected = true;
+    _wsReconnectAttempts = 0;
+    chrome.notifications.clear('server-reconnect-failed');
+  };
+
   _ws.onclose = () => {
+    if (_wsWasConnected) {
+      _wsWasConnected = false;
+      _wsReconnectAttempts = 0;
+      chrome.notifications.create('server-disconnect', {
+        type: 'basic',
+        iconUrl: 'icons/icon48.png',
+        title: 'Job Tracker: Server disconnected',
+        message: 'Lost connection to local server. Reconnecting…',
+        priority: 1,
+      });
+    } else {
+      _wsReconnectAttempts++;
+      // Notify at 3, 10, 30 attempts (~15s, ~50s, ~2.5min)
+      if (_wsReconnectAttempts === 3 || _wsReconnectAttempts === 10 || _wsReconnectAttempts === 30) {
+        chrome.notifications.create('server-reconnect-failed', {
+          type: 'basic',
+          iconUrl: 'icons/icon48.png',
+          title: 'Job Tracker: Server still unreachable',
+          message: `Reconnect attempt ${_wsReconnectAttempts} failed. Notion sync and AI processing are paused.`,
+          priority: 2,
+        });
+      }
+    }
     _ws = null;
     clearTimeout(_wsReconnectTimer);
     _wsReconnectTimer = setTimeout(() => {
