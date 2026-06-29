@@ -724,6 +724,55 @@ try {
     });
   }
 
+  // Shared helper: analyzeWithAI → storeAIAnalysis → syncMatchToNotion.
+  // missingFields: string[] → merge-only update; null/undefined → full replace.
+  // onDone(matchWithAI, syncResp) on success; onDone(null) on error.
+  function _runAIAndSync({ matchId, text, match, postEl, useQueue = false, missingFields, onDone } = {}) {
+    if (useQueue) updateAIQueue(+1);
+    chrome.runtime.sendMessage({ action: 'analyzeWithAI', text, matchId }, (aiResp) => {
+      if (useQueue) updateAIQueue(-1);
+      if (chrome.runtime.lastError || !aiResp?.success) {
+        if (!missingFields) {
+          const errType = (aiResp && aiResp.error) || 'ai_error';
+          chrome.runtime.sendMessage({ action: 'storeAIAnalysis', matchId, analysis: { _error: errType } });
+          if (postEl) _updateAITag(postEl, { _error: errType });
+        }
+        onDone && onDone(null);
+        return;
+      }
+      if (postEl) _updateAITag(postEl, aiResp.analysis);
+      const storeMsg = {
+        action: 'storeAIAnalysis',
+        matchId,
+        analysis: aiResp.analysis,
+        textHash: aiResp.textHash,
+        ...(missingFields && { missingFields }),
+        ...(!aiResp.skipped && {
+          timeToProcess: aiResp.timeToProcess,
+          model: aiResp.model,
+          tokens: aiResp.tokens,
+        }),
+      };
+      chrome.runtime.sendMessage(storeMsg, () => {
+        const matchWithAI = { ...match, aiAnalysis: aiResp.analysis, status: 'ai_processed' };
+        chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match: matchWithAI }, (syncResp) => {
+          onDone && onDone(matchWithAI, syncResp);
+        });
+      });
+    });
+  }
+
+  // Returns array of field names missing from a match's aiAnalysis, or null if none missing.
+  function _getMissingAIFields(match) {
+    const ai = match.aiAnalysis;
+    if (!ai || ai._error) return null; // needs full reprocess
+    const missing = [];
+    if (!ai.jobTitles?.length && !ai.jobTitle) missing.push('Job Title');
+    if (ai.visaSponsorship === null || ai.visaSponsorship === undefined) missing.push('VISA');
+    if (ai.confidence === null || ai.confidence === undefined) missing.push('AI Confidence');
+    return missing.length ? missing : null;
+  }
+
   function checkDuplicateAndDecorate(postEl, bar, url, text) {
     // Check if this post is a duplicate of an already saved post
     try {
@@ -959,7 +1008,6 @@ try {
           emails: uniqueEmails,
           skills: info.skills || [], // Matched skills
           status: 'new', // Default status for new matches
-          duplicateOf: null, // Will be set if this is a duplicate
           hiringSignals: info.hiringHits || [], // ALL matched hiring signals (array)
           relevanceScore: relevanceScore // Computed lead quality score
         };
@@ -975,38 +1023,12 @@ try {
           const needsAI = existing && (!existing.aiAnalysis || existing.aiAnalysis._error);
           if (!needsAI) {
             dbg('match already saved:', url);
+            if (existing.aiAnalysis) _updateAITag(postEl, existing.aiAnalysis);
             return;
           }
           dbg('match already saved but missing AI, running analysis:', url);
-          updateAIQueue(+1);
-          chrome.runtime.sendMessage({ action: 'analyzeWithAI', text, matchId: existing.id }, (aiResp) => {
-            updateAIQueue(-1);
-            if (chrome.runtime.lastError || !aiResp || !aiResp.success) return;
-            // skipped = cached result — still store so status → ai_processed
-            chrome.runtime.sendMessage({
-              action: 'storeAIAnalysis',
-              matchId: existing.id,
-              analysis: aiResp.analysis,
-              textHash: aiResp.textHash,
-              timeToProcess: aiResp.timeToProcess,
-              model: aiResp.model,
-              tokens: aiResp.tokens,
-            }, () => {
-              _updateAITag(postEl, aiResp.analysis);
-              const matchWithAI = { ...existing, aiAnalysis: aiResp.analysis, status: 'ai_processed' };
-              chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match: matchWithAI });
-            });
-          });
+          _runAIAndSync({ matchId: existing.id, text, match: existing, postEl, useQueue: true });
           return;
-        }
-        
-        // Check for content-based duplicates
-        const duplicateId = findDuplicate(match, matches);
-        if (duplicateId) {
-          match.duplicateOf = duplicateId;
-          dbg(`marked as duplicate of ${duplicateId}`);
-          // Note: duplicate counter is incremented in checkDuplicateAndDecorate()
-          // to avoid double-counting and ensure UI badge appears first
         }
         
         chrome.runtime.sendMessage({ action: 'saveMatch', match }, (saveResp) => {
@@ -1035,60 +1057,14 @@ try {
               setNotionLink(postEl, syncResp.notionPageId);
             }
 
-            // Step 2 — run AI analysis in the background
-            updateAIQueue(+1);
-            chrome.runtime.sendMessage({ action: 'analyzeWithAI', text, matchId: match.id }, (aiResp) => {
-              updateAIQueue(-1);
-              if (chrome.runtime.lastError || !aiResp || !aiResp.success) {
-                dbg('AI analyze skipped:', aiResp && aiResp.error);
-                if (aiResp && aiResp.error === 'context_too_long') {
-                  chrome.runtime.sendMessage({ action: 'storeAIAnalysis', matchId: match.id, analysis: { _error: 'context_too_long' } });
-                  _updateAITag(postEl, { _error: 'context_too_long' });
-                }
-                return;
-              }
-              if (aiResp.skipped) {
-                dbg('AI hash match (cached):', match.id);
-                _updateAITag(postEl, aiResp.analysis);
-                const storeAndSync = (cb) => {
-                  if (!match.aiAnalysis || match.aiAnalysis._error) {
-                    chrome.runtime.sendMessage({
-                      action: 'storeAIAnalysis',
-                      matchId: match.id,
-                      analysis: aiResp.analysis,
-                      textHash: aiResp.textHash || hashText(text),
-                    }, cb);
-                  } else { cb && cb(); }
-                };
-                storeAndSync(() => {
-                  const matchWithAI = { ...match, aiAnalysis: aiResp.analysis, status: 'ai_processed' };
-                  chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match: matchWithAI });
-                });
-                return;
-              }
-              dbg('AI analysis:', JSON.stringify(aiResp.analysis));
-
-              // Step 3 — store AI result, then PATCH the existing Notion page
-              chrome.runtime.sendMessage({
-                action: 'storeAIAnalysis',
-                matchId: match.id,
-                analysis: aiResp.analysis,
-                textHash: aiResp.textHash,
-                timeToProcess: aiResp.timeToProcess,
-                model: aiResp.model,
-                tokens: aiResp.tokens,
-              }, () => {
-                _updateAITag(postEl, aiResp.analysis);
-                // Use notionPageId captured from Step 1 — no storage re-read needed
-                const matchWithAI = { ...match, aiAnalysis: aiResp.analysis, status: 'ai_processed' };
-                chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match: matchWithAI }, (patchResp) => {
-                  if (chrome.runtime.lastError) return;
-                  if (patchResp && patchResp.success) dbg('notion AI patch ok:', match.id);
-                  if (patchResp && patchResp.error) dbg('notion AI patch error:', patchResp.error);
-                  refreshStorageCounts();
-                });
-              });
-            });
+            // Step 2 — run AI analysis in the background, then PATCH Notion (Step 3)
+            _runAIAndSync({ matchId: match.id, text, match, postEl, useQueue: true, onDone: (matchWithAI, patchResp) => {
+              if (!matchWithAI) { dbg('AI analyze skipped/error:', match.id); return; }
+              dbg('AI analysis:', JSON.stringify(matchWithAI.aiAnalysis));
+              if (patchResp?.success) dbg('notion AI patch ok:', match.id);
+              if (patchResp?.error) dbg('notion AI patch error:', patchResp.error);
+              refreshStorageCounts();
+            } });
           });
         });
       });
@@ -1751,6 +1727,29 @@ try {
     processTodayBtn.addEventListener('click', () => processTodayMatches(processTodayBtn));
     indicator.insertBefore(processTodayBtn, hideBtn);
 
+    const fillMissingBtn = document.createElement('button');
+    fillMissingBtn.type = 'button';
+    fillMissingBtn.className = 'devops-scan-fill-missing-btn';
+    fillMissingBtn.textContent = '🔍 Fill Missing';
+    fillMissingBtn.title = 'Run AI only on matches with incomplete fields (job title, visa, confidence) — never overwrites existing data';
+    fillMissingBtn.style.cssText = `
+      width: 100%;
+      margin-top: 4px;
+      padding: 7px;
+      background: #1565c0;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      transition: background 0.2s;
+    `;
+    fillMissingBtn.addEventListener('mouseenter', () => { fillMissingBtn.style.background = '#0d47a1'; });
+    fillMissingBtn.addEventListener('mouseleave', () => { if (!fillMissingBtn.disabled) fillMissingBtn.style.background = '#1565c0'; });
+    fillMissingBtn.addEventListener('click', () => fillMissingFields(fillMissingBtn));
+    indicator.insertBefore(fillMissingBtn, hideBtn);
+
     updateAutoScrollStatus();
   }
 
@@ -1796,44 +1795,16 @@ try {
       };
 
       matches.forEach(match => {
-        // Ensure Notion sync first (creates page if missing)
-        const syncAndAI = (m) => {
-          chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match: m }, (syncResp) => {
-            if (chrome.runtime.lastError) { finish(); return; }
-
-            // If AI missing or errored, run it
-            if (!m.aiAnalysis || m.aiAnalysis._error) {
-              const text = m.fullText || m.snippet || '';
-              chrome.runtime.sendMessage({ action: 'analyzeWithAI', text, matchId: m.id }, (aiResp) => {
-                if (chrome.runtime.lastError || !aiResp?.success) { finish(); return; }
-                if (aiResp.skipped) { finish(); return; }
-                chrome.runtime.sendMessage({
-                  action: 'storeAIAnalysis',
-                  matchId: m.id,
-                  analysis: aiResp.analysis,
-                  textHash: aiResp.textHash,
-                  timeToProcess: aiResp.timeToProcess,
-                  model: aiResp.model,
-                  tokens: aiResp.tokens,
-                }, () => {
-                  // Patch Notion with AI data
-                  chrome.storage.local.get(['devopsSavedMatches'], (res) => {
-                    if (chrome.runtime.lastError) { finish(); return; }
-                    const fresh = (res.devopsSavedMatches || []).find(x => x.id === m.id);
-                    if (fresh) {
-                      chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match: fresh }, () => finish());
-                    } else {
-                      finish();
-                    }
-                  });
-                });
-              });
-            } else {
-              finish();
-            }
-          });
-        };
-        syncAndAI(match);
+        // Ensure Notion sync first (creates page if missing), then run AI if needed
+        chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match }, (syncResp) => {
+          if (chrome.runtime.lastError) { finish(); return; }
+          if (!match.aiAnalysis || match.aiAnalysis._error) {
+            const text = match.fullText || match.snippet || '';
+            _runAIAndSync({ matchId: match.id, text, match, onDone: () => finish() });
+          } else {
+            finish();
+          }
+        });
       });
     });
   }
@@ -1842,6 +1813,53 @@ try {
     btn.disabled = false;
     btn.textContent = '⚡ Process Today';
     btn.style.background = '#5c35cc';
+  }
+
+  function fillMissingFields(btn) {
+    if (!chrome.storage?.local) return;
+    btn.disabled = true;
+    btn.textContent = '⏳ Scanning…';
+    btn.style.background = '#424242';
+
+    chrome.storage.local.get(['devopsSavedMatches'], (result) => {
+      if (chrome.runtime.lastError) { resetFillBtn(btn); return; }
+      const candidates = (result.devopsSavedMatches || [])
+        .map(m => ({ match: m, missing: _getMissingAIFields(m) }))
+        .filter(({ missing }) => missing !== null);
+
+      if (candidates.length === 0) {
+        btn.textContent = '✅ No gaps';
+        btn.style.background = '#2e7d32';
+        btn.disabled = false;
+        setTimeout(() => resetFillBtn(btn), 3000);
+        return;
+      }
+
+      dbg(`[FillMissing] ${candidates.length} match(es) with gaps`);
+      let done = 0;
+      const finish = () => {
+        done++;
+        btn.textContent = `⏳ ${done}/${candidates.length}`;
+        if (done >= candidates.length) {
+          refreshStorageCounts();
+          btn.textContent = `✅ Filled (${candidates.length})`;
+          btn.style.background = '#2e7d32';
+          btn.disabled = false;
+          setTimeout(() => resetFillBtn(btn), 4000);
+        }
+      };
+
+      candidates.forEach(({ match, missing }) => {
+        const text = match.fullText || match.snippet || '';
+        _runAIAndSync({ matchId: match.id, text, match, missingFields: missing, onDone: () => finish() });
+      });
+    });
+  }
+
+  function resetFillBtn(btn) {
+    btn.disabled = false;
+    btn.textContent = '🔍 Fill Missing';
+    btn.style.background = '#1565c0';
   }
 
   function findPostRoot(el) {
@@ -2243,7 +2261,6 @@ try {
         emails,
         skills: info.skills || [],
         status: 'new',
-        duplicateOf: null,
         hiringSignals: info.hiringHits || [],
         relevanceScore,
         source: 'jobs',
@@ -2255,22 +2272,7 @@ try {
         updateIndicator();
         chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match }, () => {
           if (chrome.runtime.lastError) return;
-          chrome.runtime.sendMessage({ action: 'analyzeWithAI', text }, (aiResp) => {
-            if (chrome.runtime.lastError || !aiResp?.success) return;
-            chrome.runtime.sendMessage({
-              action: 'storeAIAnalysis',
-              matchId: match.id,
-              analysis: aiResp.analysis,
-              timeToProcess: aiResp.timeToProcess,
-              model: aiResp.model,
-              tokens: aiResp.tokens,
-            }, () => {
-              chrome.storage.local.get(['devopsSavedMatches'], (res) => {
-                const fresh = (res.devopsSavedMatches || []).find(m => m.id === match.id);
-                if (fresh) chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match: fresh });
-              });
-            });
-          });
+          _runAIAndSync({ matchId: match.id, text, match });
         });
       });
     });

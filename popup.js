@@ -230,36 +230,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 });
 
-// Check for first-time user
-function checkFirstTimeUser() {
-  safeStorageGet(['welcomeCompleted']).then((result) => {
-    if (!result.welcomeCompleted) {
-      // Show welcome page on first install
-      chrome.tabs.create({ url: 'welcome.html' });
-    }
-  }).catch((error) => {
-    console.error('Error checking first-time user:', error);
-  });
-}
-
-// Check for version update (What's New)
-function checkVersionUpdate() {
-  const currentVersion = chrome.runtime.getManifest().version;
-  safeStorageGet(['lastVersion', 'showWhatsNew']).then((result) => {
-    const lastVersion = result.lastVersion;
-    if (lastVersion && lastVersion !== currentVersion) {
-      safeStorageSet({ lastVersion: currentVersion, showWhatsNew: false });
-      chrome.tabs.create({ url: chrome.runtime.getURL('whats-new.html') });
-    } else if (!lastVersion) {
-      safeStorageSet({ lastVersion: currentVersion });
-    } else if (result.showWhatsNew) {
-      safeStorageSet({ showWhatsNew: false });
-      chrome.tabs.create({ url: chrome.runtime.getURL('whats-new.html') });
-    }
-  }).catch((error) => {
-    console.error('Error checking version update:', error);
-  });
-}
 
 document.getElementById('notion-test-sync').addEventListener('click', () => {
   const btn = document.getElementById('notion-test-sync');
@@ -348,8 +318,6 @@ async function checkServerStatus() {
 updateStats();
 updateNotionStatus();
 checkServerStatus();
-checkFirstTimeUser();
-checkVersionUpdate();
 chrome.runtime.sendMessage({ action: 'clearBadge' });
 
 // Refresh stats every 2 seconds

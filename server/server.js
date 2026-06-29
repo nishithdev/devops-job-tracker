@@ -60,6 +60,15 @@ db.exec(`
     created_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_ai_requests_created ON ai_requests(created_at);
+  CREATE INDEX IF NOT EXISTS idx_matches_created ON matches(created_at);
+
+  CREATE TABLE IF NOT EXISTS ai_queue (
+    hash        TEXT PRIMARY KEY,
+    text        TEXT NOT NULL,
+    ollama_url  TEXT NOT NULL,
+    ollama_model TEXT NOT NULL,
+    created_at  INTEGER NOT NULL
+  );
 `).catch(err => { console.error('DB init error:', err); process.exit(1); });
 
 // ---- Express ----------------------------------------------------------------
@@ -114,9 +123,10 @@ function drainAIQueue() {
     aiActive++;
     const { hash, text, ollamaUrl, ollamaModel, resolve } = aiQueue.shift();
     broadcast({ action: 'aiStart', queueDepth: aiQueue.length, hash: hash.slice(0, 8) });
-    const startTime = Date.now();
     runOllama(text, ollamaUrl, ollamaModel).then(result => {
       aiActive--;
+      // Remove from persistent queue regardless of outcome
+      db.run('DELETE FROM ai_queue WHERE hash = ?', [hash]).catch(() => {});
       if (result.success) {
         aiCache.set(hash, result.analysis);
         db.run(
@@ -136,6 +146,27 @@ function drainAIQueue() {
     });
   }
 }
+
+// Restore persisted AI queue on startup (survives Docker restarts)
+db.all('SELECT hash, text, ollama_url, ollama_model FROM ai_queue ORDER BY created_at').then(rows => {
+  if (!rows.length) return;
+  console.log(`[DevOps Scanner] Restoring ${rows.length} AI jobs from queue`);
+  for (const row of rows) {
+    // Skip if already cached
+    if (aiCache.has(row.hash)) {
+      db.run('DELETE FROM ai_queue WHERE hash = ?', [row.hash]).catch(() => {});
+      continue;
+    }
+    aiQueue.push({
+      hash: row.hash,
+      text: row.text,
+      ollamaUrl: row.ollama_url,
+      ollamaModel: row.ollama_model,
+      resolve: () => {}, // fire-and-forget on restore
+    });
+  }
+  drainAIQueue();
+}).catch(() => {});
 
 const AI_PROMPT = (text) => [
   'You are a job post analyzer. Analyze the following LinkedIn post and extract structured information.',
@@ -186,7 +217,8 @@ app.post('/save', async (req, res) => {
   try {
     const { match, userName } = req.body;
     if (!match?.id) return res.status(400).json({ error: 'missing match.id' });
-    const resolvedUser = userName || req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
+    // Extension sends notionUserName or stable deviceId UUID — no IP fallback needed
+    const resolvedUser = userName || null;
 
     if (match.url) {
       const existing = await db.get('SELECT id, notion_page_id FROM matches WHERE url = ?', [match.url]);
@@ -196,9 +228,10 @@ app.post('/save', async (req, res) => {
     }
 
     const now = Date.now();
+    const notionPageId = match.notionPageId || null;
     await db.run(
-      'INSERT OR IGNORE INTO matches (id, url, saved_by, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
-      [match.id, match.url || null, resolvedUser, JSON.stringify(match), now, now]
+      'INSERT OR IGNORE INTO matches (id, url, notion_page_id, saved_by, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [match.id, match.url || null, notionPageId, resolvedUser, JSON.stringify(match), now, now]
     );
 
     broadcast({ action: 'newMatch', url: match.url, savedBy: resolvedUser });
@@ -265,8 +298,15 @@ app.post('/ai', async (req, res) => {
     return res.json({ success: true, analysis: cached, skipped: true });
   }
 
+  const cleanUrl = ollamaUrl.replace(/\/$/, '');
+  // Persist job before enqueuing — survives restart
+  await db.run(
+    'INSERT OR IGNORE INTO ai_queue (hash, text, ollama_url, ollama_model, created_at) VALUES (?, ?, ?, ?, ?)',
+    [hash, text, cleanUrl, ollamaModel, Date.now()]
+  ).catch(() => {});
+
   const result = await new Promise(resolve => {
-    aiQueue.push({ hash, text, ollamaUrl: ollamaUrl.replace(/\/$/, ''), ollamaModel, resolve });
+    aiQueue.push({ hash, text, ollamaUrl: cleanUrl, ollamaModel, resolve });
     drainAIQueue();
   });
 
@@ -285,19 +325,20 @@ app.get('/health', async (req, res) => {
 app.get('/stats', async (req, res) => {
   try {
     const todayCutoff = new Date(); todayCutoff.setHours(0,0,0,0);
-    const [total, notion, today, byUser, recentMatches] = await Promise.all([
+    const [total, notion, today, byUser] = await Promise.all([
       db.get('SELECT COUNT(*) as n FROM matches'),
       db.get('SELECT COUNT(*) as n FROM matches WHERE notion_page_id IS NOT NULL'),
       db.get('SELECT COUNT(*) as n FROM matches WHERE created_at >= ?', [todayCutoff.getTime()]),
-      db.all('SELECT saved_by, COUNT(*) as n FROM matches WHERE saved_by IS NOT NULL GROUP BY saved_by ORDER BY n DESC'),
-      db.all('SELECT id, url, notion_page_id, saved_by, created_at FROM matches ORDER BY created_at DESC LIMIT 50'),
+      db.all(`SELECT saved_by, COUNT(*) as n, MAX(created_at) as last_saved,
+              SUM(CASE WHEN notion_page_id IS NULL THEN 1 ELSE 0 END) as unsynced
+              FROM matches WHERE saved_by IS NOT NULL GROUP BY saved_by ORDER BY n DESC`),
     ]);
     res.json({
       totalMatches: total.n, withNotion: notion.n, todayMatches: today.n,
       aiCacheSize: aiCache.size, aiQueueDepth: aiQueue.length, aiActive: aiActive > 0,
       wsClients: clients.size,
       uptime: Math.floor(process.uptime()),
-      byUser, recentMatches,
+      byUser,
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -308,10 +349,15 @@ app.get('/chart-data', async (req, res) => {
     const days = parseInt(req.query.days) || 14;
     const cutoff = Date.now() - days * 86400000;
 
-    const [saveRows, aiRows, modelRows] = await Promise.all([
+    const [saveRows, notionRows, aiRows, modelRows] = await Promise.all([
       db.all(
         `SELECT date(created_at/1000,'unixepoch') as d, COUNT(*) as n
          FROM matches WHERE created_at >= ? GROUP BY d ORDER BY d`,
+        [cutoff]
+      ),
+      db.all(
+        `SELECT date(created_at/1000,'unixepoch') as d, COUNT(*) as n
+         FROM matches WHERE created_at >= ? AND notion_page_id IS NOT NULL GROUP BY d ORDER BY d`,
         [cutoff]
       ),
       db.all(
@@ -334,14 +380,16 @@ app.get('/chart-data', async (req, res) => {
       labels.push(d.toISOString().slice(0, 10));
     }
     const toMap = rows => Object.fromEntries(rows.map(r => [r.d, r]));
-    const saveMap = toMap(saveRows);
-    const aiMap = toMap(aiRows);
+    const saveMap   = toMap(saveRows);
+    const notionMap = toMap(notionRows);
+    const aiMap     = toMap(aiRows);
 
     res.json({
       labels,
-      saves: labels.map(d => saveMap[d]?.n || 0),
-      analyzed: labels.map(d => (aiMap[d]?.total || 0)),
-      cacheHits: labels.map(d => (aiMap[d]?.hits || 0)),
+      saves:       labels.map(d => saveMap[d]?.n   || 0),
+      notionSynced:labels.map(d => notionMap[d]?.n || 0),
+      analyzed:    labels.map(d => aiMap[d]?.total  || 0),
+      cacheHits:   labels.map(d => aiMap[d]?.hits   || 0),
       byModel: modelRows.map(r => ({
         model: r.model,
         n: r.n,
@@ -417,26 +465,47 @@ header h1{font-size:18px;font-weight:700;color:#f8fafc}
 .charts{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:0 24px 24px}
 @media(max-width:700px){.charts{grid-template-columns:1fr}}
 .chart-wrap{position:relative;height:220px}
+.chart-empty{display:flex;align-items:center;justify-content:center;height:220px;font-size:12px;color:#475569}
+.feed-filters{display:flex;gap:6px;padding:8px 16px;border-bottom:1px solid #334155}
+.filter-pill{font-size:10px;padding:2px 10px;border-radius:10px;border:1px solid #334155;color:#64748b;background:none;cursor:pointer;transition:all .15s}
+.filter-pill.active{background:#334155;color:#e2e8f0;border-color:#475569}
+.range-tabs{display:flex;gap:4px}
+.range-tab{font-size:10px;padding:2px 8px;border-radius:6px;border:1px solid #334155;color:#64748b;background:none;cursor:pointer}
+.range-tab.active{background:#334155;color:#e2e8f0}
+.user-meta{display:flex;flex-direction:column;gap:2px;flex:1}
+.user-last{font-size:10px;color:#475569}
+.user-notion{font-size:10px}
+.notion-ok{color:#22c55e}
+.notion-warn{color:#f59e0b}
+.ai-progress{margin:8px 16px 4px;height:4px;background:#0f172a;border-radius:2px;overflow:hidden;display:none}
+.ai-progress-fill{height:100%;background:#a78bfa;border-radius:2px;transition:width .3s}
+.reconnect-count{font-size:11px;color:#64748b;margin-left:8px}
 </style>
 </head>
 <body>
 <header>
   <div class="dot" id="conn-dot"></div>
   <h1>🔍 DevOps Scanner</h1>
-  <span class="uptime" id="uptime-label"></span>
+  <span class="reconnect-count" id="reconnect-count"></span>
+  <span class="uptime" id="uptime-label" title="" style="cursor:default;margin-left:auto"></span>
 </header>
 
 <div class="grid">
   <div class="card"><div class="card-label">Total Matches</div><div class="card-value green" id="s-total">—</div><div class="card-sub" id="s-today"></div></div>
   <div class="card"><div class="card-label">Notion Synced</div><div class="card-value blue" id="s-notion">—</div></div>
   <div class="card"><div class="card-label">AI Cache</div><div class="card-value purple" id="s-cache">—</div></div>
-  <div class="card"><div class="card-label">AI Queue</div><div class="card-value orange" id="s-queue">—</div><div class="card-sub" id="s-active"></div></div>
   <div class="card"><div class="card-label">Online Users</div><div class="card-value yellow" id="s-clients">—</div></div>
 </div>
 
 <div class="cols">
   <div class="panel">
     <div class="panel-header">Live Activity <span class="badge" id="feed-count">0 events</span></div>
+    <div class="feed-filters">
+      <button class="filter-pill active" data-filter="all">ALL</button>
+      <button class="filter-pill" data-filter="tag-save">SAVE</button>
+      <button class="filter-pill" data-filter="tag-ai">AI</button>
+      <button class="filter-pill" data-filter="tag-err">ERR</button>
+    </div>
     <div class="feed" id="feed"></div>
   </div>
   <div>
@@ -446,11 +515,11 @@ header h1{font-size:18px;font-weight:700;color:#f8fafc}
     </div>
     <div class="panel">
       <div class="panel-header">AI Engine</div>
+      <div class="ai-progress" id="ai-progress"><div class="ai-progress-fill" id="ai-progress-fill" style="width:0%"></div></div>
       <div class="ai-bar" id="ai-bar">
-        <div class="ai-row"><label>Cache hit rate</label><div class="bar"><div class="bar-fill green" id="bar-hitrate" style="width:0%"></div></div><span id="lbl-hitrate" style="font-size:11px;color:#64748b;width:32px;text-align:right">—</span></div>
-        <div class="ai-row"><label>Last job</label><span style="color:#94a3b8" id="lbl-lastjob">—</span></div>
-        <div class="ai-row"><label>Last model</label><span style="color:#94a3b8" id="lbl-model">—</span></div>
-        <div class="ai-row"><label>Last tokens</label><span style="color:#94a3b8" id="lbl-tokens">—</span></div>
+        <div class="ai-row"><label>Status</label><span style="color:#94a3b8" id="s-active">—</span></div>
+        <div class="ai-row"><label>Queue</label><span style="color:#94a3b8" id="s-queue-label">—</span></div>
+        <div class="ai-row"><label>Cache size</label><span style="color:#94a3b8" id="s-cache-label">—</span></div>
       </div>
     </div>
   </div>
@@ -458,11 +527,25 @@ header h1{font-size:18px;font-weight:700;color:#f8fafc}
 
 <div class="charts">
   <div class="panel">
-    <div class="panel-header">Jobs Analyzed vs Saved <span class="badge">14 days</span></div>
+    <div class="panel-header">Jobs: Analyzed vs Saved vs Notion
+      <div class="range-tabs">
+        <button class="range-tab" data-days="7">7d</button>
+        <button class="range-tab active" data-days="14">14d</button>
+        <button class="range-tab" data-days="30">30d</button>
+      </div>
+    </div>
+    <div id="chart-jobs-empty" class="chart-empty" style="display:none">No data yet — start scanning on LinkedIn</div>
     <div class="chart-wrap" style="padding:16px"><canvas id="chart-jobs"></canvas></div>
   </div>
   <div class="panel">
-    <div class="panel-header">AI Engine</div>
+    <div class="panel-header">AI: Requests vs Cache Hits
+      <div class="range-tabs">
+        <button class="range-tab" data-days="7">7d</button>
+        <button class="range-tab active" data-days="14">14d</button>
+        <button class="range-tab" data-days="30">30d</button>
+      </div>
+    </div>
+    <div id="chart-ai-empty" class="chart-empty" style="display:none">No AI activity yet</div>
     <div class="chart-wrap" style="padding:16px"><canvas id="chart-ai"></canvas></div>
   </div>
 </div>
@@ -471,8 +554,13 @@ header h1{font-size:18px;font-weight:700;color:#f8fafc}
 <script>
 const WS_URL = 'ws://' + location.host + '/ws';
 const STATS_URL = '/stats';
-let ws, feedCount = 0, aiRequests = 0, aiCacheHits = 0, serverStartTime;
+let ws, feedCount = 0, serverStartMs = null;
+let activeFeedFilter = 'all';
+let chartDays = 14;
+let aiQueueTotal = 0, aiQueueDone = 0;
+let reconnectTimer = null;
 
+// ---- Helpers ----------------------------------------------------------------
 function fmt(ms) {
   if (ms < 1000) return ms + 'ms';
   return (ms/1000).toFixed(1) + 's';
@@ -482,10 +570,12 @@ function fmtUptime(s) {
   return h ? h+'h '+m+'m' : m ? m+'m '+sec+'s' : sec+'s';
 }
 function ago(ts) {
+  if (!ts) return '—';
   const d = Math.floor((Date.now()-ts)/1000);
   return d < 60 ? d+'s ago' : d < 3600 ? Math.floor(d/60)+'m ago' : Math.floor(d/3600)+'h ago';
 }
 
+// ---- Feed -------------------------------------------------------------------
 function addFeedItem(tag, tagClass, msg) {
   const feed = document.getElementById('feed');
   feedCount++;
@@ -493,49 +583,100 @@ function addFeedItem(tag, tagClass, msg) {
   const ts = new Date().toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
   const el = document.createElement('div');
   el.className = 'feed-item';
+  el.dataset.tag = tagClass;
   el.innerHTML = '<span class="ts">'+ts+'</span><span class="msg">'+msg+'</span><span class="tag '+tagClass+'">'+tag+'</span>';
+  if (activeFeedFilter !== 'all' && tagClass !== activeFeedFilter) el.style.display = 'none';
   feed.prepend(el);
-  // Keep max 200 items
   while (feed.children.length > 200) feed.removeChild(feed.lastChild);
 }
 
+// Feed filter pills
+document.querySelectorAll('.filter-pill').forEach(pill => {
+  pill.addEventListener('click', () => {
+    document.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
+    pill.classList.add('active');
+    activeFeedFilter = pill.dataset.filter;
+    document.querySelectorAll('.feed-item').forEach(item => {
+      item.style.display = (activeFeedFilter === 'all' || item.dataset.tag === activeFeedFilter) ? '' : 'none';
+    });
+  });
+});
+
+// ---- Stats ------------------------------------------------------------------
 function loadStats() {
   fetch(STATS_URL).then(r=>r.json()).then(d => {
     document.getElementById('s-total').textContent = d.totalMatches;
     document.getElementById('s-today').textContent = d.todayMatches + ' today';
     document.getElementById('s-notion').textContent = d.withNotion;
     document.getElementById('s-cache').textContent = d.aiCacheSize;
-    document.getElementById('s-queue').textContent = d.aiQueueDepth;
+    document.getElementById('s-queue-label').textContent = d.aiQueueDepth;
+    document.getElementById('s-cache-label').textContent = d.aiCacheSize;
     document.getElementById('s-active').textContent = d.aiActive ? 'running' : 'idle';
     document.getElementById('s-clients').textContent = d.wsClients;
-    document.getElementById('uptime-label').textContent = 'up ' + fmtUptime(d.uptime);
 
-    // Users
+    // Uptime with exact start time tooltip
+    const uptimeEl = document.getElementById('uptime-label');
+    uptimeEl.textContent = 'up ' + fmtUptime(d.uptime);
+    if (!serverStartMs) serverStartMs = Date.now() - d.uptime * 1000;
+    uptimeEl.title = 'Server started: ' + new Date(serverStartMs).toLocaleString();
+
+    // Users — last seen + Notion sync status
     const ul = document.getElementById('users-list');
-    if (d.byUser.length === 0) {
+    if (!d.byUser || d.byUser.length === 0) {
       ul.innerHTML = '<span style="font-size:12px;color:#475569">No saves yet</span>';
     } else {
       ul.innerHTML = d.byUser.map(u => {
         const init = (u.saved_by||'?').charAt(0).toUpperCase();
-        return '<div class="user-row"><div class="user-avatar">'+init+'</div><div class="user-name">'+(u.saved_by||'Unknown')+'</div><div class="user-count">'+u.n+' saves</div></div>';
+        const notionBadge = u.unsynced > 0
+          ? '<span class="user-notion notion-warn">⚠ '+u.unsynced+' unsynced</span>'
+          : '<span class="user-notion notion-ok">✓ Notion</span>';
+        return '<div class="user-row">'
+          + '<div class="user-avatar">'+init+'</div>'
+          + '<div class="user-meta">'
+          + '<div class="user-name">'+(u.saved_by||'Unknown')+'</div>'
+          + '<div class="user-last">'+ago(u.last_saved)+' · '+u.n+' saves · '+notionBadge+'</div>'
+          + '</div>'
+          + '</div>';
       }).join('');
-    }
-
-    // AI hit rate
-    if (aiRequests > 0) {
-      const pct = Math.round((aiCacheHits/aiRequests)*100);
-      document.getElementById('bar-hitrate').style.width = pct+'%';
-      document.getElementById('lbl-hitrate').textContent = pct+'%';
     }
   }).catch(()=>{});
 }
 
+// ---- AI queue progress bar --------------------------------------------------
+function setAIProgress(queueDepth, active) {
+  const bar = document.getElementById('ai-progress');
+  const fill = document.getElementById('ai-progress-fill');
+  if (active && queueDepth >= 0) {
+    bar.style.display = 'block';
+    const pct = aiQueueTotal > 0 ? Math.round((aiQueueDone / aiQueueTotal) * 100) : 0;
+    fill.style.width = pct + '%';
+  } else {
+    bar.style.display = 'none';
+    aiQueueTotal = 0; aiQueueDone = 0;
+  }
+}
+
+// ---- WebSocket --------------------------------------------------------------
+function startReconnectCountdown(sec) {
+  const el = document.getElementById('reconnect-count');
+  let t = sec;
+  el.textContent = 'reconnecting in ' + t + 's…';
+  reconnectTimer = setInterval(() => {
+    t--;
+    if (t <= 0) { clearInterval(reconnectTimer); el.textContent = ''; }
+    else el.textContent = 'reconnecting in ' + t + 's…';
+  }, 1000);
+}
+
 function connectWS() {
+  if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
+  document.getElementById('reconnect-count').textContent = '';
   ws = new WebSocket(WS_URL);
   const dot = document.getElementById('conn-dot');
 
   ws.onopen = () => {
     dot.className = 'dot';
+    serverStartMs = null; // reset so uptime tooltip recalculates
     addFeedItem('CONN', 'tag-ai', 'Connected to server');
     loadStats();
   };
@@ -543,35 +684,37 @@ function connectWS() {
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     if (msg.action === 'newMatch') {
-      aiRequests++;
       const by = msg.savedBy ? ' by <b>'+msg.savedBy+'</b>' : '';
       const urlShort = msg.url ? msg.url.replace('https://www.linkedin.com/','…/') : 'unknown';
       addFeedItem('SAVE', 'tag-save', 'New match'+by+' — <span style="color:#475569">'+urlShort+'</span>');
       loadStats();
       loadCharts();
     } else if (msg.action === 'aiStart') {
-      addFeedItem('AI', 'tag-ai', 'Ollama request started (queue: '+msg.queueDepth+')');
-      document.getElementById('s-queue').textContent = msg.queueDepth;
+      aiQueueTotal = Math.max(aiQueueTotal, msg.queueDepth + 1);
+      addFeedItem('AI', 'tag-ai', 'Ollama started (queue: '+msg.queueDepth+')');
+      document.getElementById('s-queue-label').textContent = msg.queueDepth;
       document.getElementById('s-active').textContent = 'running';
+      setAIProgress(msg.queueDepth, true);
     } else if (msg.action === 'aiComplete') {
-      aiCacheHits; // will update on next cache hit
+      aiQueueDone++;
       const t = fmt(msg.timeMs);
-      addFeedItem('DONE', 'tag-ai', msg.model+' · '+t+' · '+msg.tokens+' tokens · cache: '+msg.cacheSize);
+      addFeedItem('DONE', 'tag-ai', msg.model+' · '+t+' · '+msg.tokens+' tok · cache:'+msg.cacheSize);
       document.getElementById('s-cache').textContent = msg.cacheSize;
+      document.getElementById('s-cache-label').textContent = msg.cacheSize;
       document.getElementById('s-active').textContent = 'idle';
-      document.getElementById('lbl-lastjob').textContent = t;
-      document.getElementById('lbl-model').textContent = msg.model;
-      document.getElementById('lbl-tokens').textContent = msg.tokens;
+      setAIProgress(0, false);
       loadCharts();
     } else if (msg.action === 'aiError') {
       addFeedItem('ERR', 'tag-err', 'AI error: '+msg.error);
       document.getElementById('s-active').textContent = 'idle';
+      setAIProgress(0, false);
     }
   };
 
   ws.onclose = () => {
     dot.className = 'dot offline';
-    addFeedItem('DISC', 'tag-err', 'Disconnected — reconnecting…');
+    addFeedItem('DISC', 'tag-err', 'Disconnected');
+    startReconnectCountdown(3);
     setTimeout(connectWS, 3000);
   };
   ws.onerror = () => ws.close();
@@ -594,10 +737,11 @@ function initCharts() {
   jobChart = new Chart(jobCtx, {
     type: 'bar',
     data: { labels: [], datasets: [
-      { label: 'Analyzed', data: [], backgroundColor: 'rgba(167,139,250,0.7)', borderColor: '#a78bfa', borderWidth: 1 },
-      { label: 'Saved',    data: [], backgroundColor: 'rgba(34,197,94,0.7)',   borderColor: '#22c55e', borderWidth: 1 },
+      { label: 'Analyzed',     data: [], backgroundColor: 'rgba(167,139,250,0.7)', borderColor: '#a78bfa', borderWidth: 1 },
+      { label: 'Saved',        data: [], backgroundColor: 'rgba(34,197,94,0.7)',   borderColor: '#22c55e', borderWidth: 1 },
+      { label: 'Notion Synced',data: [], backgroundColor: 'rgba(96,165,250,0.7)',  borderColor: '#60a5fa', borderWidth: 1 },
     ]},
-    options: { ...CHART_DEFAULTS, plugins: { ...CHART_DEFAULTS.plugins, tooltip: { callbacks: { title: t => t[0].label } } } },
+    options: { ...CHART_DEFAULTS },
   });
 
   const aiCtx = document.getElementById('chart-ai').getContext('2d');
@@ -612,12 +756,21 @@ function initCharts() {
 }
 
 function loadCharts() {
-  fetch('/chart-data').then(r => r.json()).then(d => {
-    const shortLabels = d.labels.map(l => l.slice(5)); // MM-DD
+  fetch('/chart-data?days='+chartDays).then(r => r.json()).then(d => {
+    const shortLabels = d.labels.map(l => l.slice(5));
+
+    const jobsEmpty = d.saves.every(v => v === 0) && d.analyzed.every(v => v === 0);
+    document.getElementById('chart-jobs-empty').style.display = jobsEmpty ? 'flex' : 'none';
+    document.getElementById('chart-jobs').style.display = jobsEmpty ? 'none' : 'block';
+
+    const aiEmpty = d.analyzed.every(v => v === 0);
+    document.getElementById('chart-ai-empty').style.display = aiEmpty ? 'flex' : 'none';
+    document.getElementById('chart-ai').style.display = aiEmpty ? 'none' : 'block';
 
     jobChart.data.labels = shortLabels;
     jobChart.data.datasets[0].data = d.analyzed;
     jobChart.data.datasets[1].data = d.saves;
+    jobChart.data.datasets[2].data = d.notionSynced;
     jobChart.update('none');
 
     aiChart.data.labels = shortLabels;
@@ -627,11 +780,22 @@ function loadCharts() {
   }).catch(() => {});
 }
 
+// Date range tabs — both chart panels
+document.querySelectorAll('.range-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    const days = parseInt(tab.dataset.days);
+    // Update active state only in parent panel
+    tab.closest('.panel').querySelectorAll('.range-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    chartDays = days;
+    loadCharts();
+  });
+});
+
 // Wait for Chart.js to load before init
 window.addEventListener('load', () => { initCharts(); loadCharts(); });
 
 connectWS();
-// Also poll stats every 15s as fallback
 setInterval(loadStats, 15000);
 setInterval(loadCharts, 30000);
 </script>

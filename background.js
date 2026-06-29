@@ -1,6 +1,22 @@
 // Background service worker for LinkedIn DevOps Scanner
 // Handles keyboard shortcuts and extension-level events
 
+// ---- Device identity --------------------------------------------------------
+// Stable UUID per Chrome profile — used as saved_by fallback when no userName set
+function _ensureDeviceId() {
+  chrome.storage.local.get(['deviceId'], (s) => {
+    if (!s.deviceId) {
+      const id = crypto.randomUUID();
+      chrome.storage.local.set({ deviceId: id });
+      console.log('[DevOps Scanner] Device ID assigned:', id);
+    }
+  });
+}
+_ensureDeviceId();
+
+// ---- Save write lock — prevents multi-tab race on same URL ------------------
+const _savingUrls = new Set();
+
 // Handle keyboard shortcuts
 chrome.commands.onCommand.addListener((command) => {
   if (command === 'toggle-autoscroll') {
@@ -29,133 +45,33 @@ chrome.runtime.onInstalled.addListener((details) => {
     chrome.tabs.create({ url: 'welcome.html' });
   } else if (details.reason === 'update') {
     console.log('Extension updated to version', chrome.runtime.getManifest().version);
-    chrome.storage.local.get(['lastVersion', 'welcomeCompleted'], (result) => {
-      const currentVersion = chrome.runtime.getManifest().version;
-      const lastVersion = result.lastVersion;
-      if (result.welcomeCompleted && lastVersion && lastVersion !== currentVersion) {
-        createWhatsNewNotification(lastVersion, currentVersion);
-      }
-      chrome.storage.local.set({ lastVersion: currentVersion });
-    });
+    chrome.storage.local.set({ lastVersion: chrome.runtime.getManifest().version });
   }
 });
 
-function createWhatsNewNotification(oldVersion, newVersion) {
-  chrome.storage.local.set({
-    showWhatsNew: true,
-    whatsNewVersion: newVersion
-  });
-}
+// ---- Scheduled tasks --------------------------------------------------------
 
-// ---- Scheduled re-scan (stale post detection + Notion cache rebuild) ----------
-
-const RESCAN_ALARM        = 'devops-rescan-stale';
 const NOTION_RETRY_ALARM  = 'devops-notion-retry';
 const SERVER_SYNC_ALARM   = 'devops-server-sync';
-const RESCAN_PERIOD_MINUTES = 24 * 60;
 
-chrome.alarms.create(RESCAN_ALARM,       { periodInMinutes: RESCAN_PERIOD_MINUTES });
 chrome.alarms.create(NOTION_RETRY_ALARM, { periodInMinutes: 5 });
 chrome.alarms.create(SERVER_SYNC_ALARM,  { periodInMinutes: 2 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === RESCAN_ALARM)       runStaleCheck();
   if (alarm.name === NOTION_RETRY_ALARM) runNotionRetryQueue();
   if (alarm.name === SERVER_SYNC_ALARM)  runServerSyncQueue();
 });
 
-async function runStaleCheck() {
-  const stored = await chrome.storage.local.get(['devopsSavedMatches', 'notionToken', 'notionDatabaseId']);
-  const matches = stored.devopsSavedMatches || [];
-  if (matches.length === 0) return;
-
-  let changed = false;
-
-  // 1. Stale LinkedIn post detection
-  for (const match of matches) {
-    if (!match.url) continue;
-    if (match.status === 'rejected' || match.stale) continue;
-    try {
-      const res = await fetch(match.url, { method: 'HEAD', credentials: 'omit' });
-      if (res.status === 404 || res.status === 410) {
-        match.stale = true;
-        changed = true;
-        console.log('[DevOps Scanner] Stale post detected:', match.url);
-      }
-    } catch (_) {
-      // Network error — skip, don't mark stale on transient failures
-    }
-  }
-
-  // 2. Notion cache rebuild + dedup (only if Notion configured)
-  if (stored.notionToken && stored.notionDatabaseId) {
-    const notionPages = await fetchAllNotionPages(stored.notionToken, stored.notionDatabaseId);
-    if (notionPages) {
-      // Build URL → page map (keep oldest page per URL for dedup)
-      const urlToPage = new Map();
-      const duplicatePageIds = [];
-      for (const page of notionPages) {
-        const url = page.properties?.URL?.url;
-        if (!url) continue;
-        if (urlToPage.has(url)) {
-          // Keep older (lower created_time), archive newer
-          const existing = urlToPage.get(url);
-          const existingTime = new Date(existing.created_time).getTime();
-          const thisTime = new Date(page.created_time).getTime();
-          if (thisTime > existingTime) {
-            duplicatePageIds.push(page.id);
-          } else {
-            duplicatePageIds.push(existing.id);
-            urlToPage.set(url, page);
-          }
-        } else {
-          urlToPage.set(url, page);
-        }
-      }
-
-      // Archive duplicate Notion pages
-      for (const pageId of duplicatePageIds) {
-        try {
-          await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
-            method: 'PATCH',
-            headers: {
-              'Authorization': `Bearer ${stored.notionToken}`,
-              'Content-Type': 'application/json',
-              'Notion-Version': '2022-06-28',
-            },
-            body: JSON.stringify({ archived: true }),
-          });
-          console.log('[DevOps Scanner] Archived duplicate Notion page:', pageId);
-        } catch (_) {}
-      }
-
-      // Rebuild local notionPageId map from canonical pages
-      for (const match of matches) {
-        if (!match.url || match.notionDeleted) continue;
-        const page = urlToPage.get(match.url);
-        if (page && match.notionPageId !== page.id) {
-          match.notionPageId = page.id;
-          delete match.notionDeleted;
-          changed = true;
-        }
-      }
-    }
-  }
-
-  if (changed) {
-    await chrome.storage.local.set({ devopsSavedMatches: matches });
-  }
-}
-
 // ---- Notion retry queue (exponential backoff, max 3 attempts) ---------------
 
-const NOTION_RETRY_DELAYS = [5 * 60_000, 15 * 60_000, 45 * 60_000]; // 5m, 15m, 45m
+const NOTION_RETRY_DELAY = 5 * 60_000; // 5m, max 2 attempts then drop
+const NOTION_RETRY_MAX   = 2;
 
 async function _enqueueNotionRetry(matchId) {
   const s = await chrome.storage.local.get(['notionSyncQueue']);
   const queue = s.notionSyncQueue || [];
-  if (queue.some(e => e.matchId === matchId)) return; // already queued
-  queue.push({ matchId, attempts: 0, nextRetry: Date.now() + NOTION_RETRY_DELAYS[0] });
+  if (queue.some(e => e.matchId === matchId)) return;
+  queue.push({ matchId, attempts: 0, nextRetry: Date.now() + NOTION_RETRY_DELAY });
   await chrome.storage.local.set({ notionSyncQueue: queue });
 }
 
@@ -173,14 +89,14 @@ async function runNotionRetryQueue() {
 
   for (const entry of ready) {
     const match = matches.find(m => m.id === entry.matchId);
-    if (!match) continue; // match deleted — drop from queue
+    if (!match) continue;
 
     const result = await _syncMatchToNotion(match);
-    if (result.success || result.skipped) continue; // done — don't re-add
+    if (result.success || result.skipped) continue;
 
     entry.attempts++;
-    if (entry.attempts >= NOTION_RETRY_DELAYS.length) continue; // max attempts — drop
-    entry.nextRetry = now + NOTION_RETRY_DELAYS[entry.attempts];
+    if (entry.attempts >= NOTION_RETRY_MAX) continue; // drop after 2 attempts
+    entry.nextRetry = now + NOTION_RETRY_DELAY;
     remaining.push(entry);
   }
 
@@ -211,7 +127,7 @@ async function _enqueueServerSync(match) {
 }
 
 async function runServerSyncQueue() {
-  const s = await chrome.storage.local.get(['serverSyncQueue', 'localServerUrl', 'notionUserName']);
+  const s = await chrome.storage.local.get(['serverSyncQueue', 'localServerUrl', 'notionUserName', 'devopsSavedMatches']);
   const queue = s.serverSyncQueue || [];
   if (!queue.length || !s.localServerUrl) return;
 
@@ -221,12 +137,16 @@ async function runServerSyncQueue() {
 
   const remaining = queue.filter(e => e.nextRetry > now);
 
+  const savedMatches = s.devopsSavedMatches || [];
   for (const entry of ready) {
     try {
+      // Use fresh match from storage so notionPageId synced since enqueue is included
+      const fresh = savedMatches.find(m => m.id === entry.match.id);
+      const matchToSend = fresh || entry.match;
       const r = await fetch(`${s.localServerUrl}/save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ match: entry.match, userName: s.notionUserName || null }),
+        body: JSON.stringify({ match: matchToSend, userName: s.notionUserName || null }),
       });
       if (r.ok) {
         console.log('[DevOps Scanner] Server sync retry succeeded:', entry.match.id);
@@ -279,33 +199,6 @@ chrome.storage.local.get(['badgeCount'], (s) => {
     chrome.action.setBadgeBackgroundColor({ color: '#1976d2' });
   }
 });
-
-// Fetches all pages from a Notion database (handles pagination).
-async function fetchAllNotionPages(token, databaseId) {
-  const pages = [];
-  let cursor;
-  try {
-    do {
-      const body = cursor ? { start_cursor: cursor } : {};
-      const r = await fetch(`https://api.notion.com/v1/databases/${databaseId}/query`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
-          'Notion-Version': '2022-06-28',
-        },
-        body: JSON.stringify(body),
-      });
-      if (!r.ok) return null;
-      const data = await r.json();
-      pages.push(...(data.results || []));
-      cursor = data.has_more ? data.next_cursor : null;
-    } while (cursor);
-    return pages;
-  } catch (_) {
-    return null;
-  }
-}
 
 // Queries Notion for an existing page matching a LinkedIn post URL.
 // Returns the page object or null.
@@ -430,7 +323,7 @@ async function _syncMatchToNotion(match) {
       chrome.storage.local.get(['devopsSavedMatches'], (res) => {
         const matches = res.devopsSavedMatches || [];
         const m = matches.find(m => m.id === match.id);
-        if (m) { m.notionPageId = notionPageId; delete m.notionDeleted; chrome.storage.local.set({ devopsSavedMatches: matches }); }
+        if (m) { m.notionPageId = notionPageId; chrome.storage.local.set({ devopsSavedMatches: matches }); }
       });
     }
   }
@@ -458,7 +351,7 @@ async function _syncMatchToNotion(match) {
         chrome.storage.local.get(['devopsSavedMatches', 'localServerUrl'], (res) => {
           const matches = res.devopsSavedMatches || [];
           const m = matches.find(m => m.id === match.id);
-          if (m) { m.notionPageId = data.id; delete m.notionDeleted; chrome.storage.local.set({ devopsSavedMatches: matches }); }
+          if (m) { m.notionPageId = data.id; chrome.storage.local.set({ devopsSavedMatches: matches }); }
           // Relay notionPageId to server so other users can find it on dedup
           if (res.localServerUrl && match.url) {
             fetch(`${res.localServerUrl}/notion-page-id`, {
@@ -478,7 +371,7 @@ async function _syncMatchToNotion(match) {
       chrome.storage.local.get(['devopsSavedMatches'], (res) => {
         const matches = res.devopsSavedMatches || [];
         const m = matches.find(m => m.id === match.id);
-        if (m) { delete m.notionPageId; delete m.notionDeleted; chrome.storage.local.set({ devopsSavedMatches: matches }); }
+        if (m) { delete m.notionPageId; chrome.storage.local.set({ devopsSavedMatches: matches }); }
       });
       // Retry once as a fresh POST
       return _syncMatchToNotion({ ...match, notionPageId: undefined });
@@ -625,7 +518,7 @@ function handleAnalyzeWithAI(message, sendResponse) {
 // ---- Atomic saveMatch — local-first, parallel background sync ---------------
 // Priority: local storage (instant) → server + Notion fire in parallel after respond
 function handleSaveMatch(message, sendResponse) {
-  chrome.storage.local.get(['localServerUrl', 'notionUserName', 'devopsSavedMatches'], (s) => {
+  chrome.storage.local.get(['localServerUrl', 'notionUserName', 'devopsSavedMatches', 'deviceId'], (s) => {
     const match = message.match;
     const existing = s.devopsSavedMatches || [];
 
@@ -635,10 +528,22 @@ function handleSaveMatch(message, sendResponse) {
       return;
     }
 
+    // Write lock: prevent two tabs saving same URL simultaneously
+    if (match.url && _savingUrls.has(match.url)) {
+      sendResponse({ duplicate: true });
+      return;
+    }
+    if (match.url) _savingUrls.add(match.url);
+
+    // Stable identity: notionUserName > deviceId UUID > anonymous
+    const userName = s.notionUserName || s.deviceId || null;
+
     // Save locally — respond immediately, don't wait for server or Notion
     existing.unshift(match);
     if (existing.length > 500) existing.length = 500;
     chrome.storage.local.set({ devopsSavedMatches: existing }, () => {
+      if (match.url) _savingUrls.delete(match.url);
+
       if (chrome.runtime.lastError) {
         sendResponse({ error: chrome.runtime.lastError.message });
         return;
@@ -651,7 +556,7 @@ function handleSaveMatch(message, sendResponse) {
         fetch(`${s.localServerUrl}/save`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ match, userName: s.notionUserName || null }),
+          body: JSON.stringify({ match, userName }),
         }).then(r => r.json()).then(data => {
           if (data.duplicate && data.notionPageId) {
             // Another device already saved — pull their notionPageId into local
@@ -669,23 +574,6 @@ function handleSaveMatch(message, sendResponse) {
     });
   });
   return true;
-}
-
-function _saveLocalMatch(match, existing, sendResponse) {
-  if (match.url && existing.some(m => m.url === match.url)) {
-    sendResponse({ duplicate: true });
-    return;
-  }
-  existing.unshift(match);
-  if (existing.length > 500) existing.length = 500;
-  chrome.storage.local.set({ devopsSavedMatches: existing }, () => {
-    if (chrome.runtime.lastError) {
-      sendResponse({ error: chrome.runtime.lastError.message });
-    } else {
-      _incrementBadge();
-      sendResponse({ saved: true });
-    }
-  });
 }
 
 // ---- Atomic updateMatchStatus (prevents multi-tab race on status writes) ----
