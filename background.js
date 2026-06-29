@@ -51,14 +51,17 @@ function createWhatsNewNotification(oldVersion, newVersion) {
 
 const RESCAN_ALARM        = 'devops-rescan-stale';
 const NOTION_RETRY_ALARM  = 'devops-notion-retry';
+const SERVER_SYNC_ALARM   = 'devops-server-sync';
 const RESCAN_PERIOD_MINUTES = 24 * 60;
 
 chrome.alarms.create(RESCAN_ALARM,       { periodInMinutes: RESCAN_PERIOD_MINUTES });
 chrome.alarms.create(NOTION_RETRY_ALARM, { periodInMinutes: 5 });
+chrome.alarms.create(SERVER_SYNC_ALARM,  { periodInMinutes: 2 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === RESCAN_ALARM)       runStaleCheck();
   if (alarm.name === NOTION_RETRY_ALARM) runNotionRetryQueue();
+  if (alarm.name === SERVER_SYNC_ALARM)  runServerSyncQueue();
 });
 
 async function runStaleCheck() {
@@ -182,6 +185,65 @@ async function runNotionRetryQueue() {
   }
 
   await chrome.storage.local.set({ notionSyncQueue: remaining });
+}
+
+// ---- Server sync retry queue ------------------------------------------------
+
+const SERVER_SYNC_DELAYS = [2 * 60_000, 10 * 60_000, 30 * 60_000]; // 2m, 10m, 30m
+
+async function _enqueueServerSync(match) {
+  const s = await chrome.storage.local.get(['serverSyncQueue']);
+  const queue = s.serverSyncQueue || [];
+  if (queue.some(e => e.match.id === match.id)) return;
+  queue.push({ match, attempts: 0, nextRetry: Date.now() + SERVER_SYNC_DELAYS[0] });
+  await chrome.storage.local.set({ serverSyncQueue: queue });
+  console.log('[DevOps Scanner] Queued for server sync:', match.id);
+}
+
+async function runServerSyncQueue() {
+  const s = await chrome.storage.local.get(['serverSyncQueue', 'localServerUrl', 'notionUserName']);
+  const queue = s.serverSyncQueue || [];
+  if (!queue.length || !s.localServerUrl) return;
+
+  const now = Date.now();
+  const ready = queue.filter(e => e.nextRetry <= now);
+  if (!ready.length) return;
+
+  const remaining = queue.filter(e => e.nextRetry > now);
+
+  for (const entry of ready) {
+    try {
+      const r = await fetch(`${s.localServerUrl}/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ match: entry.match, userName: s.notionUserName || null }),
+      });
+      if (r.ok) {
+        console.log('[DevOps Scanner] Server sync retry succeeded:', entry.match.id);
+        // Notify content scripts so they can update the "Local only" pill
+        chrome.tabs.query({}, (tabs) => {
+          for (const tab of tabs) {
+            chrome.tabs.sendMessage(tab.id, {
+              action: 'serverSyncComplete',
+              matchId: entry.match.id,
+              url: entry.match.url,
+            }).catch(() => {});
+          }
+        });
+        continue; // don't re-add to remaining
+      }
+    } catch (_) {}
+
+    entry.attempts++;
+    if (entry.attempts < SERVER_SYNC_DELAYS.length) {
+      entry.nextRetry = now + SERVER_SYNC_DELAYS[entry.attempts];
+      remaining.push(entry);
+    } else {
+      console.log('[DevOps Scanner] Server sync retry exhausted, dropping:', entry.match.id);
+    }
+  }
+
+  await chrome.storage.local.set({ serverSyncQueue: remaining });
 }
 
 // ---- Badge count (new matches since last popup open) ------------------------
@@ -582,11 +644,16 @@ function handleSaveMatch(message, sendResponse) {
         _saveLocalMatch(match, s.devopsSavedMatches || [], sendResponse);
         return;
       } catch (_) {
-        // Fall through to local save
+        // Server unreachable — save locally and queue for retry
+        _saveLocalMatch(match, s.devopsSavedMatches || [], (resp) => {
+          if (resp.saved) _enqueueServerSync(match);
+          sendResponse({ ...resp, serverOffline: true });
+        });
+        return;
       }
     }
 
-    // Local-only fallback
+    // Local-only (no server configured)
     _saveLocalMatch(match, s.devopsSavedMatches || [], sendResponse);
   });
   return true;

@@ -1022,6 +1022,10 @@ try {
             dbg('storage.set error:', saveResp.error);
             return;
           }
+          if (saveResp && saveResp.serverOffline) {
+            dbg('server offline — saved locally only');
+            _markServerOffline(postEl);
+          }
           dbg('saved match:', match.id, info.devopsHits.join(', '));
 
           // Step 1 — sync to Notion immediately so data is never lost
@@ -2105,6 +2109,11 @@ try {
       _markSavedByOther(message.url, message.savedBy);
       return true;
     }
+
+    if (message.action === 'serverSyncComplete') {
+      _markServerSynced(message.url, message.matchId);
+      return true;
+    }
   });
 
   function _markSavedByOther(url, savedBy) {
@@ -2121,6 +2130,34 @@ try {
         badge.textContent = savedBy ? `👤 saved by ${savedBy}` : '👤 saved by another user';
         badge.style.cssText = 'font-size:11px;color:#1565c0;background:#e3f2fd;border-radius:4px;padding:2px 6px;margin-left:6px;';
         bar.appendChild(badge);
+      });
+    }
+  }
+
+  function _markServerOffline(postEl) {
+    if (!postEl || postEl.querySelector('.devops-scan-offline-pill')) return;
+    const bar = postEl.querySelector('.devops-scan-bar');
+    if (!bar) return;
+    const pill = document.createElement('span');
+    pill.className = 'devops-scan-offline-pill';
+    pill.textContent = '⚡ Local only';
+    pill.title = 'Server was offline — saved locally, will auto-sync when server is back.';
+    pill.style.cssText = 'font-size:11px;color:#92400e;background:#fef3c7;border:1px solid #f59e0b;border-radius:4px;padding:2px 6px;margin-left:6px;cursor:default;';
+    bar.appendChild(pill);
+  }
+
+  function _markServerSynced(url, matchId) {
+    const POST_SELECTORS_ALL = [...POST_SELECTORS, ...POST_ROOT_SELECTORS];
+    for (const sel of POST_SELECTORS_ALL) {
+      document.querySelectorAll(sel).forEach((postEl) => {
+        const postUrl = getPostUrl(postEl);
+        if (url && postUrl !== url) return;
+        const pill = postEl.querySelector('.devops-scan-offline-pill');
+        if (!pill) return;
+        pill.textContent = '✅ Synced';
+        pill.title = 'Successfully synced to server.';
+        pill.style.cssText = 'font-size:11px;color:#166534;background:#dcfce7;border:1px solid #22c55e;border-radius:4px;padding:2px 6px;margin-left:6px;cursor:default;';
+        setTimeout(() => pill.remove(), 4000);
       });
     }
   }

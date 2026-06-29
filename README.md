@@ -8,23 +8,90 @@ A Chrome extension that scans your LinkedIn feed for DevOps job posts, scores th
 
 ```mermaid
 flowchart TD
-    A([LinkedIn Feed / Search Page]) -->|content.js scans DOM on scroll| B[V2 Classifier\nscore + keyword match]
-    B -->|score > threshold| C[Highlight post\nshow score pill]
-    C -->|user clicks Save| D[chrome.storage.local\ndevopsSavedMatches]
+    %% ── LinkedIn Layer ──────────────────────────────────────────────────
+    LI([LinkedIn Feed / Jobs Search])
+    LI -->|MutationObserver on scroll| CL[content.js\nclassifyV2 · score · keyword match]
+    CL -->|score above threshold| HL[Highlight post\nscore pill · match counter]
+    HL -->|match detected — auto save| SM[sendMessage saveMatch]
 
-    D -->|Step 1 - auto trigger| E[background.js\nsyncMatchToNotion]
-    E -->|POST /v1/pages| F[(Notion Database)]
+    %% ── Save Decision ───────────────────────────────────────────────────
+    SM --> BG[background.js\nService Worker]
+    BG -->|server URL configured?| SD{Server\nreachable?}
 
-    D -->|Step 2 - auto trigger| G[background.js\nanalyzeWithAI]
-    G -->|POST /api/generate| H([Ollama\nlocal model])
-    H -->|JSON: jobTitle\nexperienceLevel\nvisaSponsorship\nconfidence| G
-    G -->|timeToProcess + model recorded| I[storeAIAnalysis\nback to storage]
-    I -->|Step 3 - PATCH existing page| E
+    SD -->|yes| SRV[POST /save\nLocal Server]
+    SD -->|no — offline| LC[chrome.storage.local\ndevopsSavedMatches]
+    LC --> SQ[(serverSyncQueue\nchrome.storage.local)]
+    SRV -->|duplicate by URL| DUP[return duplicate\nlink existing notionPageId]
+    SRV -->|accepted| LC2[also save to\nchrome.storage.local]
 
-    F -->|columns updated| J[Job Title · Experience Level\nVISA · AI Confidence\nAI Model · AI Time ms]
+    SQ -->|SERVER_SYNC_ALARM\nevery 2 min| RT[runServerSyncQueue\nretry POST /save\n2m → 10m → 30m]
+    RT -->|success| SC[serverSyncComplete\nmessage to tabs]
+    SC -->|content.js| PIL[swap pill\n⚡ Local only → ✅ Synced]
 
-    K([Settings — Bulk Process]) -->|for each unanalyzed match| G
-    L([Stale Check — 24h cron]) -->|HEAD each saved URL| D
+    %% ── Local Server ────────────────────────────────────────────────────
+    SRV --> DB[(SQLite\nmatches · ai_cache\nai_requests)]
+    SRV --> WS[WebSocket broadcast\nnewMatch event]
+    WS -->|all connected clients| WSC[background.js\nWS client\non each device]
+    WSC -->|tabs.sendMessage| MOB[matchSavedByOther\n👤 saved by X pill]
+
+    %% ── AI Path ─────────────────────────────────────────────────────────
+    LC2 -->|Step 2 auto trigger| AI[sendMessage analyzeWithAI]
+    AI --> BG2[background.js]
+    BG2 -->|hash dedup check| HC{In\nai_cache?}
+    HC -->|yes cached| CAC[return cached analysis\nskipped=true\nlog ai_requests cached=1]
+    HC -->|no — enqueue| OL[POST /ai\nLocal Server AI Queue]
+    OL -->|POST /api/generate| OLL([Ollama\nlocal model])
+    OLL -->|jobTitles · visaSponsorship\nconfidence JSON| OL
+    OL --> DB
+    OL --> WS2[WebSocket broadcast\naiComplete event]
+    OL -->|log model · tokens · ms| DB
+
+    %% ── Notion Path ─────────────────────────────────────────────────────
+    LC2 -->|Step 1 auto trigger| NT[sendMessage syncMatchToNotion]
+    NT --> BG3[background.js]
+    BG3 -->|notionToken set?| NTC{Notion\nconfigured?}
+    NTC -->|no| SKP[skip]
+    NTC -->|yes| NP[POST api.notion.com\ncreate page]
+    NP -->|success| NID[store notionPageId\nPATCH /notion-page-id on server]
+    NP -->|fail| NQ[(notionSyncQueue\nchrome.storage.local)]
+    NQ -->|NOTION_RETRY_ALARM\nevery 5 min| NR[runNotionRetryQueue\n5m → 15m → 45m → drop]
+
+    AI -->|Step 3 after AI done| NPA[PATCH notion page\nadd AI fields]
+    NPA --> NP2[api.notion.com\nPATCH /pages/id]
+
+    %% ── Dedup Layers ─────────────────────────────────────────────────────
+    BG -->|layer 1| D1[chrome.storage.local\nURL match · same profile]
+    SRV -->|layer 2| D2[SQLite URL UNIQUE\nacross all devices]
+    NR -->|layer 3| D3[Notion URL query\nstale check 24h alarm]
+    OL -->|layer 4| D4[text_hash in ai_cache\nsame content never re-analyzed]
+
+    %% ── Dashboard ───────────────────────────────────────────────────────
+    DB --> DASH[GET /dashboard\nLocal Server]
+    DASH --> CH1[Chart: saves vs analyzed\n14 day bar chart]
+    DASH --> CH2[Chart: AI requests vs cache hits\n14 day line chart]
+    DASH --> UL[Users panel\nsaved_by counts]
+    DASH --> FD[Live feed\nWS events]
+
+    %% ── Multi-device ────────────────────────────────────────────────────
+    DEVB([Device B\nPeer User]) -->|POST /save| SRV
+    DEVB -->|WS client connects| WS
+    DEVA2([Device A\nTab 2 / Tab N]) -->|shared chrome.storage.local| LC
+    DEVA2 -->|WS client| WS
+
+    %% ── Styling ─────────────────────────────────────────────────────────
+    classDef server fill:#1e293b,stroke:#475569,color:#e2e8f0
+    classDef storage fill:#0f172a,stroke:#334155,color:#94a3b8
+    classDef external fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    classDef decision fill:#2d1b4e,stroke:#7c3aed,color:#c4b5fd
+    classDef alert fill:#3b0a0a,stroke:#ef4444,color:#fca5a5
+    classDef success fill:#0a2e1a,stroke:#22c55e,color:#86efac
+
+    class SRV,OL,DASH,DB,WS,WS2 server
+    class LC,LC2,SQ,NQ,D1,D2,D3,D4 storage
+    class LI,OLL,NP,NP2,DEVB,DEVA2 external
+    class SD,HC,NTC decision
+    class DUP,SKP alert
+    class NID,SC,PIL,CAC success
 ```
 
 ---
