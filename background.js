@@ -17,6 +17,24 @@ _ensureDeviceId();
 // ---- Save write lock — prevents multi-tab race on same URL ------------------
 const _savingUrls = new Set();
 
+// Serial storage mutex — prevents concurrent read-modify-write races on devopsSavedMatches
+let _storageLockQueue = Promise.resolve();
+function _updateMatch(matchId, fn) {
+  _storageLockQueue = _storageLockQueue.then(() => new Promise((resolve) => {
+    chrome.storage.local.get(['devopsSavedMatches'], (res) => {
+      const matches = res.devopsSavedMatches || [];
+      const m = matches.find(m => m.id === matchId);
+      if (m) {
+        fn(m);
+        chrome.storage.local.set({ devopsSavedMatches: matches }, resolve);
+      } else {
+        resolve();
+      }
+    });
+  }));
+  return _storageLockQueue;
+}
+
 // Handle keyboard shortcuts
 chrome.commands.onCommand.addListener((command) => {
   if (command === 'toggle-autoscroll') {
@@ -320,11 +338,7 @@ async function _syncMatchToNotion(match) {
     if (existing) {
       notionPageId = existing.id;
       // Store it locally so future calls skip the query
-      chrome.storage.local.get(['devopsSavedMatches'], (res) => {
-        const matches = res.devopsSavedMatches || [];
-        const m = matches.find(m => m.id === match.id);
-        if (m) { m.notionPageId = notionPageId; chrome.storage.local.set({ devopsSavedMatches: matches }); }
-      });
+      _updateMatch(match.id, m => { m.notionPageId = notionPageId; });
     }
   }
 
@@ -348,11 +362,9 @@ async function _syncMatchToNotion(match) {
       const data = await r.json();
       saveNotionStatus({ ok: true, ts: Date.now(), matchId: match.id });
       if (data.id) {
-        chrome.storage.local.get(['devopsSavedMatches', 'localServerUrl'], (res) => {
-          const matches = res.devopsSavedMatches || [];
-          const m = matches.find(m => m.id === match.id);
-          if (m) { m.notionPageId = data.id; chrome.storage.local.set({ devopsSavedMatches: matches }); }
-          // Relay notionPageId to server so other users can find it on dedup
+        _updateMatch(match.id, m => { m.notionPageId = data.id; });
+        // Relay notionPageId to server so other users can find it on dedup
+        chrome.storage.local.get(['localServerUrl'], (res) => {
           if (res.localServerUrl && match.url) {
             fetch(`${res.localServerUrl}/notion-page-id`, {
               method: 'PATCH',
@@ -368,11 +380,7 @@ async function _syncMatchToNotion(match) {
     const errText = await r.text();
     // 404 on PATCH = page deleted in Notion — clear local ID and retry as POST
     if (r.status === 404 && notionPageId) {
-      chrome.storage.local.get(['devopsSavedMatches'], (res) => {
-        const matches = res.devopsSavedMatches || [];
-        const m = matches.find(m => m.id === match.id);
-        if (m) { delete m.notionPageId; chrome.storage.local.set({ devopsSavedMatches: matches }); }
-      });
+      _updateMatch(match.id, m => { delete m.notionPageId; });
       // Retry once as a fresh POST
       return _syncMatchToNotion({ ...match, notionPageId: undefined });
     }
@@ -542,12 +550,12 @@ function handleSaveMatch(message, sendResponse) {
     existing.unshift(match);
     if (existing.length > 500) existing.length = 500;
     chrome.storage.local.set({ devopsSavedMatches: existing }, () => {
-      if (match.url) _savingUrls.delete(match.url);
-
       if (chrome.runtime.lastError) {
+        if (match.url) _savingUrls.delete(match.url);
         sendResponse({ error: chrome.runtime.lastError.message });
         return;
       }
+      if (match.url) _savingUrls.delete(match.url);
       _incrementBadge();
       sendResponse({ saved: true }); // instant — content.js unblocked now
 
@@ -560,14 +568,7 @@ function handleSaveMatch(message, sendResponse) {
         }).then(r => r.json()).then(data => {
           if (data.duplicate && data.notionPageId) {
             // Another device already saved — pull their notionPageId into local
-            chrome.storage.local.get(['devopsSavedMatches'], (res) => {
-              const matches = res.devopsSavedMatches || [];
-              const m = matches.find(m => m.url === match.url || m.id === match.id);
-              if (m && !m.notionPageId) {
-                m.notionPageId = data.notionPageId;
-                chrome.storage.local.set({ devopsSavedMatches: matches });
-              }
-            });
+            _updateMatch(match.id, m => { if (!m.notionPageId) m.notionPageId = data.notionPageId; });
           }
         }).catch(() => _enqueueServerSync(match)); // server offline — retry queue
       }

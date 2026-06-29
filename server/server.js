@@ -89,14 +89,24 @@ app.use((req, res, next) => {
 const server = http.createServer(app);
 const wss    = new WebSocketServer({ server });
 const clients = new Set();
+const eventLog = [];
+const EVENT_LOG_MAX = 200;
+
+function logEvent(msg) {
+  eventLog.push({ ...msg, _ts: Date.now() });
+  if (eventLog.length > EVENT_LOG_MAX) eventLog.shift();
+}
 
 wss.on('connection', (ws) => {
   clients.add(ws);
+  // Replay recent events so the feed survives refreshes
+  if (eventLog.length) ws.send(JSON.stringify({ action: 'replay', events: eventLog }));
   ws.on('close', () => clients.delete(ws));
   ws.on('error', () => clients.delete(ws));
 });
 
 function broadcast(msg) {
+  logEvent(msg);
   const str = JSON.stringify(msg);
   for (const client of clients) {
     if (client.readyState === 1 /* OPEN */) client.send(str);
@@ -400,6 +410,64 @@ app.get('/chart-data', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// POST /notion-dedup — find & optionally archive duplicate Notion pages by URL
+app.post('/notion-dedup', async (req, res) => {
+  const token  = process.env.NOTION_TOKEN;
+  const dbId   = process.env.NOTION_DB_ID;
+  const dryRun = req.query.dry !== 'false';
+  if (!token || !dbId) return res.status(400).json({ error: 'NOTION_TOKEN and NOTION_DB_ID env vars required on server' });
+
+  const nHeaders = {
+    'Authorization': `Bearer ${token}`,
+    'Notion-Version': '2022-06-28',
+    'Content-Type': 'application/json',
+  };
+
+  async function fetchAllPages() {
+    const pages = []; let cursor;
+    do {
+      const body = { page_size: 100 };
+      if (cursor) body.start_cursor = cursor;
+      const r = await fetch(`https://api.notion.com/v1/databases/${dbId}/query`, { method: 'POST', headers: nHeaders, body: JSON.stringify(body) });
+      if (!r.ok) throw new Error(`Notion query ${r.status}: ${await r.text()}`);
+      const d = await r.json();
+      pages.push(...d.results);
+      cursor = d.has_more ? d.next_cursor : null;
+    } while (cursor);
+    return pages;
+  }
+
+  try {
+    const pages = await fetchAllPages();
+    const byUrl = new Map();
+    for (const p of pages) {
+      const url = p.properties?.URL?.url;
+      if (!url) continue;
+      if (!byUrl.has(url)) byUrl.set(url, []);
+      byUrl.get(url).push(p);
+    }
+
+    const dupes = [];
+    for (const [url, group] of byUrl) {
+      if (group.length < 2) continue;
+      group.sort((a, b) => new Date(a.created_time) - new Date(b.created_time));
+      dupes.push({ url, keep: group[0].id, keepCreated: group[0].created_time, remove: group.slice(1).map(p => ({ id: p.id, created: p.created_time })) });
+    }
+
+    if (!dryRun) {
+      for (const d of dupes) {
+        for (const p of d.remove) {
+          const r = await fetch(`https://api.notion.com/v1/pages/${p.id}`, { method: 'PATCH', headers: nHeaders, body: JSON.stringify({ archived: true }) });
+          if (!r.ok) throw new Error(`Archive ${p.id} failed ${r.status}: ${await r.text()}`);
+        }
+      }
+    }
+
+    const totalRemoved = dupes.reduce((n, d) => n + d.remove.length, 0);
+    res.json({ dryRun, totalPages: pages.length, duplicateGroups: dupes.length, pagesRemoved: totalRemoved, dupes });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // GET /dashboard — real-time web dashboard
 app.get('/dashboard', (req, res) => {
   res.setHeader('Content-Type', 'text/html');
@@ -480,6 +548,20 @@ header h1{font-size:18px;font-weight:700;color:#f8fafc}
 .ai-progress{margin:8px 16px 4px;height:4px;background:#0f172a;border-radius:2px;overflow:hidden;display:none}
 .ai-progress-fill{height:100%;background:#a78bfa;border-radius:2px;transition:width .3s}
 .reconnect-count{font-size:11px;color:#64748b;margin-left:8px}
+.tools-section{padding:0 24px 24px}
+.tools-panel{background:#1e293b;border:1px solid #334155;border-radius:10px;overflow:hidden}
+.tools-body{padding:16px}
+.tools-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.btn{font-size:12px;font-weight:600;padding:6px 16px;border-radius:6px;border:none;cursor:pointer;transition:opacity .15s}
+.btn:disabled{opacity:.4;cursor:default}
+.btn-ghost{background:#334155;color:#e2e8f0}
+.btn-danger{background:#dc2626;color:#fff}
+.dedup-status{font-size:12px;color:#94a3b8;flex:1}
+.dedup-results{margin-top:12px;font-size:12px;color:#94a3b8;display:none}
+.dedup-results table{width:100%;border-collapse:collapse;margin-top:8px}
+.dedup-results td,.dedup-results th{padding:4px 8px;border-bottom:1px solid #334155;text-align:left}
+.dedup-results th{color:#64748b;font-size:10px;text-transform:uppercase}
+.dedup-results .url-cell{color:#60a5fa;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 </style>
 </head>
 <body>
@@ -550,6 +632,20 @@ header h1{font-size:18px;font-weight:700;color:#f8fafc}
   </div>
 </div>
 
+<div class="tools-section">
+  <div class="tools-panel">
+    <div class="panel-header">Notion Cleanup</div>
+    <div class="tools-body">
+      <div class="tools-row">
+        <button class="btn btn-ghost" id="btn-dry-run" onclick="runDedup(true)">Preview Duplicates</button>
+        <button class="btn btn-danger" id="btn-run" onclick="runDedup(false)" disabled>Remove Duplicates</button>
+        <span class="dedup-status" id="dedup-status">Set NOTION_TOKEN + NOTION_DB_ID env vars on server, then preview first.</span>
+      </div>
+      <div class="dedup-results" id="dedup-results"></div>
+    </div>
+  </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <script>
 const WS_URL = 'ws://' + location.host + '/ws';
@@ -576,11 +672,11 @@ function ago(ts) {
 }
 
 // ---- Feed -------------------------------------------------------------------
-function addFeedItem(tag, tagClass, msg) {
+function addFeedItem(tag, tagClass, msg, tsMs) {
   const feed = document.getElementById('feed');
   feedCount++;
   document.getElementById('feed-count').textContent = feedCount + ' events';
-  const ts = new Date().toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  const ts = new Date(tsMs || Date.now()).toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
   const el = document.createElement('div');
   el.className = 'feed-item';
   el.dataset.tag = tagClass;
@@ -683,33 +779,34 @@ function connectWS() {
 
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
+    if (msg.action === 'replay') {
+      // Render oldest→newest so prepend order is correct
+      for (const ev of msg.events) handleEvent(ev, ev._ts);
+      return;
+    }
+    handleEvent(msg, null);
+    if (msg.action === 'newMatch') { loadStats(); loadCharts(); }
+    if (msg.action === 'aiComplete') loadCharts();
+  };
+
+  function handleEvent(msg, ts) {
     if (msg.action === 'newMatch') {
       const by = msg.savedBy ? ' by <b>'+msg.savedBy+'</b>' : '';
       const urlShort = msg.url ? msg.url.replace('https://www.linkedin.com/','…/') : 'unknown';
-      addFeedItem('SAVE', 'tag-save', 'New match'+by+' — <span style="color:#475569">'+urlShort+'</span>');
-      loadStats();
-      loadCharts();
+      addFeedItem('SAVE', 'tag-save', 'New match'+by+' — <span style="color:#475569">'+urlShort+'</span>', ts);
     } else if (msg.action === 'aiStart') {
       aiQueueTotal = Math.max(aiQueueTotal, msg.queueDepth + 1);
-      addFeedItem('AI', 'tag-ai', 'Ollama started (queue: '+msg.queueDepth+')');
-      document.getElementById('s-queue-label').textContent = msg.queueDepth;
-      document.getElementById('s-active').textContent = 'running';
-      setAIProgress(msg.queueDepth, true);
+      addFeedItem('AI', 'tag-ai', 'Ollama started (queue: '+msg.queueDepth+')', ts);
+      if (!ts) { document.getElementById('s-queue-label').textContent = msg.queueDepth; document.getElementById('s-active').textContent = 'running'; setAIProgress(msg.queueDepth, true); }
     } else if (msg.action === 'aiComplete') {
       aiQueueDone++;
-      const t = fmt(msg.timeMs);
-      addFeedItem('DONE', 'tag-ai', msg.model+' · '+t+' · '+msg.tokens+' tok · cache:'+msg.cacheSize);
-      document.getElementById('s-cache').textContent = msg.cacheSize;
-      document.getElementById('s-cache-label').textContent = msg.cacheSize;
-      document.getElementById('s-active').textContent = 'idle';
-      setAIProgress(0, false);
-      loadCharts();
+      addFeedItem('DONE', 'tag-ai', msg.model+' · '+fmt(msg.timeMs)+' · '+msg.tokens+' tok · cache:'+msg.cacheSize, ts);
+      if (!ts) { document.getElementById('s-cache').textContent = msg.cacheSize; document.getElementById('s-cache-label').textContent = msg.cacheSize; document.getElementById('s-active').textContent = 'idle'; setAIProgress(0, false); }
     } else if (msg.action === 'aiError') {
-      addFeedItem('ERR', 'tag-err', 'AI error: '+msg.error);
-      document.getElementById('s-active').textContent = 'idle';
-      setAIProgress(0, false);
+      addFeedItem('ERR', 'tag-err', 'AI error: '+msg.error, ts);
+      if (!ts) { document.getElementById('s-active').textContent = 'idle'; setAIProgress(0, false); }
     }
-  };
+  }
 
   ws.onclose = () => {
     dot.className = 'dot offline';
@@ -798,6 +895,56 @@ window.addEventListener('load', () => { initCharts(); loadCharts(); });
 connectWS();
 setInterval(loadStats, 15000);
 setInterval(loadCharts, 30000);
+
+// ---- Notion Dedup -----------------------------------------------------------
+let dedupPreviewData = null;
+
+async function runDedup(dry) {
+  const statusEl  = document.getElementById('dedup-status');
+  const resultsEl = document.getElementById('dedup-results');
+  const btnDry    = document.getElementById('btn-dry-run');
+  const btnRun    = document.getElementById('btn-run');
+
+  btnDry.disabled = true;
+  btnRun.disabled = true;
+  statusEl.textContent = dry ? 'Scanning Notion…' : 'Archiving duplicates…';
+  resultsEl.style.display = 'none';
+
+  try {
+    const r = await fetch('/notion-dedup?dry=' + dry, { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.status);
+
+    if (dry) {
+      dedupPreviewData = d;
+      if (d.duplicateGroups === 0) {
+        statusEl.textContent = '✓ No duplicates found (' + d.totalPages + ' pages scanned).';
+        resultsEl.style.display = 'none';
+      } else {
+        statusEl.textContent = 'Found ' + d.duplicateGroups + ' duplicate group(s), ' + d.pagesRemoved + ' pages to remove. Review below, then click Remove.';
+        btnRun.disabled = false;
+        resultsEl.style.display = 'block';
+        resultsEl.innerHTML = '<table><tr><th>URL</th><th>Keep (oldest)</th><th>Remove</th></tr>'
+          + d.dupes.map(row =>
+              '<tr><td class="url-cell" title="'+row.url+'">'+row.url+'</td>'
+              + '<td style="color:#22c55e;white-space:nowrap">'+row.keepCreated.slice(0,10)+'</td>'
+              + '<td style="color:#f87171">'+row.remove.map(p=>p.created.slice(0,10)).join(', ')+'</td></tr>'
+            ).join('')
+          + '</table>';
+      }
+    } else {
+      dedupPreviewData = null;
+      statusEl.textContent = '✓ Archived ' + d.pagesRemoved + ' duplicate page(s) from ' + d.duplicateGroups + ' group(s).';
+      resultsEl.style.display = 'none';
+      addFeedItem('DEDUP', 'tag-save', 'Notion dedup: removed ' + d.pagesRemoved + ' pages');
+      loadStats();
+    }
+  } catch (e) {
+    statusEl.textContent = '✗ Error: ' + e.message;
+  }
+
+  btnDry.disabled = false;
+}
 </script>
 </body>
 </html>`;

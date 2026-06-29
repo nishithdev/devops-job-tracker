@@ -1796,8 +1796,9 @@ try {
 
       matches.forEach(match => {
         // Ensure Notion sync first (creates page if missing), then run AI if needed
-        chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match }, (syncResp) => {
-          if (chrome.runtime.lastError) { finish(); return; }
+        chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match }, () => {
+          // Ignore lastError — Notion sync failure must not block AI analysis
+          void chrome.runtime.lastError;
           if (!match.aiAnalysis || match.aiAnalysis._error) {
             const text = match.fullText || match.snippet || '';
             _runAIAndSync({ matchId: match.id, text, match, onDone: () => finish() });
@@ -2088,15 +2089,17 @@ try {
   const originalReplaceState = history.replaceState;
   
   history.pushState = function(...args) {
-    originalPushState.apply(this, args);
-    dbg("pushState navigation detected");
-    detectNavigation();
+    try { originalPushState.apply(this, args); } catch(e) { throw e; } finally {
+      dbg("pushState navigation detected");
+      detectNavigation();
+    }
   };
-  
+
   history.replaceState = function(...args) {
-    originalReplaceState.apply(this, args);
-    dbg("replaceState navigation detected");
-    detectNavigation();
+    try { originalReplaceState.apply(this, args); } catch(e) { throw e; } finally {
+      dbg("replaceState navigation detected");
+      detectNavigation();
+    }
   };
 
   // Listen for messages from popup and background script

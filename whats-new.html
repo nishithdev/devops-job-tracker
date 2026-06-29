@@ -158,7 +158,7 @@
     <div class="header">
       <div class="header-icon">🎉</div>
       <h1 class="header-title">What's New</h1>
-      <p class="header-version">Version 2.0.0 - Major Update</p>
+      <p class="header-version">Version 2.1.0 - Stability Update</p>
     </div>
 
     <div class="content">
@@ -229,24 +229,60 @@
       <div class="changelog-section">
         <div class="section-title">
           <span>🔧</span>
-          <span>Improvements</span>
+          <span>Improvements &amp; Bug Fixes (v2.1.0)</span>
         </div>
         <ul class="feature-list">
           <li class="feature-item">
-            <div class="feature-icon">⚡</div>
+            <div class="feature-icon">🛡️</div>
             <div class="feature-text">
-              <div class="feature-title">Faster Performance</div>
+              <div class="feature-title">Fixed: Storage Race Conditions</div>
               <div class="feature-desc">
-                Optimized scanning engine for smoother scrolling and reduced memory usage.
+                Concurrent saves from multiple tabs or devices could silently overwrite each other's Notion page IDs. All storage writes are now serialized through a mutex.
               </div>
             </div>
           </li>
           <li class="feature-item">
-            <div class="feature-icon">🎯</div>
+            <div class="feature-icon">🔗</div>
             <div class="feature-text">
-              <div class="feature-title">Better Match Detection</div>
+              <div class="feature-title">Fixed: Notion Sync Error Blocking AI</div>
               <div class="feature-desc">
-                Improved keyword matching accuracy with full-text post analysis and highlighting.
+                A Notion API error during bulk processing caused AI analysis to be skipped entirely. AI now runs regardless of Notion sync status.
+              </div>
+            </div>
+          </li>
+          <li class="feature-item">
+            <div class="feature-icon">🔒</div>
+            <div class="feature-text">
+              <div class="feature-title">Fixed: URL Save Lock Order</div>
+              <div class="feature-desc">
+                The URL write lock was released before checking for storage errors, allowing a brief race window on failed saves.
+              </div>
+            </div>
+          </li>
+          <li class="feature-item">
+            <div class="feature-icon">🧭</div>
+            <div class="feature-text">
+              <div class="feature-title">Fixed: SPA Navigation Resilience</div>
+              <div class="feature-desc">
+                LinkedIn's pushState/replaceState overrides now use try/finally so navigation detection continues even if the original call throws.
+              </div>
+            </div>
+          </li>
+          <li class="feature-item">
+            <div class="feature-icon">📊</div>
+            <div class="feature-text">
+              <div class="feature-title">Dashboard: Activity Feed Survives Refresh</div>
+              <div class="feature-desc">
+                Server now replays the last 200 events to new WebSocket connections — the live activity feed is no longer lost on page refresh.
+              </div>
+            </div>
+          </li>
+          <li class="feature-item">
+            <div class="feature-icon">🧹</div>
+            <div class="feature-text">
+              <div class="feature-title">Dashboard: Notion Cleanup Tool</div>
+              <div class="feature-desc">
+                New panel in the server dashboard to find and remove duplicate Notion entries by URL. Dry-run preview before committing.
               </div>
             </div>
           </li>
