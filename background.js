@@ -198,6 +198,16 @@ async function _enqueueServerSync(match) {
   queue.push({ match, attempts: 0, nextRetry: Date.now() + SERVER_SYNC_DELAYS[0] });
   await chrome.storage.local.set({ serverSyncQueue: queue });
   console.log('[DevOps Scanner] Queued for server sync:', match.id);
+  // Notify content scripts so they can show the "Local only" pill
+  chrome.tabs.query({}, (tabs) => {
+    for (const tab of tabs) {
+      chrome.tabs.sendMessage(tab.id, {
+        action: 'serverSyncQueued',
+        matchId: match.id,
+        url: match.url,
+      }).catch(() => {});
+    }
+  });
 }
 
 async function runServerSyncQueue() {
@@ -612,49 +622,51 @@ function handleAnalyzeWithAI(message, sendResponse) {
   return true;
 }
 
-// ---- Atomic saveMatch (prevents multi-tab race on devopsSavedMatches) -------
+// ---- Atomic saveMatch — local-first, parallel background sync ---------------
+// Priority: local storage (instant) → server + Notion fire in parallel after respond
 function handleSaveMatch(message, sendResponse) {
-  chrome.storage.local.get(['localServerUrl', 'notionUserName', 'devopsSavedMatches'], async (s) => {
+  chrome.storage.local.get(['localServerUrl', 'notionUserName', 'devopsSavedMatches'], (s) => {
     const match = message.match;
+    const existing = s.devopsSavedMatches || [];
 
-    // Server path: authoritative dedup
-    if (s.localServerUrl) {
-      try {
-        const r = await fetch(`${s.localServerUrl}/save`, {
+    // Layer 1 dedup: URL match in local storage (same Chrome profile)
+    if (match.url && existing.some(m => m.url === match.url)) {
+      sendResponse({ duplicate: true });
+      return;
+    }
+
+    // Save locally — respond immediately, don't wait for server or Notion
+    existing.unshift(match);
+    if (existing.length > 500) existing.length = 500;
+    chrome.storage.local.set({ devopsSavedMatches: existing }, () => {
+      if (chrome.runtime.lastError) {
+        sendResponse({ error: chrome.runtime.lastError.message });
+        return;
+      }
+      _incrementBadge();
+      sendResponse({ saved: true }); // instant — content.js unblocked now
+
+      // Fire server POST in background (non-blocking)
+      if (s.localServerUrl) {
+        fetch(`${s.localServerUrl}/save`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ match, userName: s.notionUserName || null }),
-        });
-        const data = await r.json();
-
-        if (data.duplicate) {
-          // Another user already saved this — link notionPageId locally if server has it
-          if (data.notionPageId) {
-            const matches = s.devopsSavedMatches || [];
-            const m = matches.find(m => m.url === match.url || m.id === match.id);
-            if (m) {
-              m.notionPageId = data.notionPageId;
-              chrome.storage.local.set({ devopsSavedMatches: matches });
-            }
+        }).then(r => r.json()).then(data => {
+          if (data.duplicate && data.notionPageId) {
+            // Another device already saved — pull their notionPageId into local
+            chrome.storage.local.get(['devopsSavedMatches'], (res) => {
+              const matches = res.devopsSavedMatches || [];
+              const m = matches.find(m => m.url === match.url || m.id === match.id);
+              if (m && !m.notionPageId) {
+                m.notionPageId = data.notionPageId;
+                chrome.storage.local.set({ devopsSavedMatches: matches });
+              }
+            });
           }
-          sendResponse({ duplicate: true });
-          return;
-        }
-        // Server accepted it — save locally too
-        _saveLocalMatch(match, s.devopsSavedMatches || [], sendResponse);
-        return;
-      } catch (_) {
-        // Server unreachable — save locally and queue for retry
-        _saveLocalMatch(match, s.devopsSavedMatches || [], (resp) => {
-          if (resp.saved) _enqueueServerSync(match);
-          sendResponse({ ...resp, serverOffline: true });
-        });
-        return;
+        }).catch(() => _enqueueServerSync(match)); // server offline — retry queue
       }
-    }
-
-    // Local-only (no server configured)
-    _saveLocalMatch(match, s.devopsSavedMatches || [], sendResponse);
+    });
   });
   return true;
 }

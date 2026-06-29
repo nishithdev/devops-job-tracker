@@ -1022,10 +1022,6 @@ try {
             dbg('storage.set error:', saveResp.error);
             return;
           }
-          if (saveResp && saveResp.serverOffline) {
-            dbg('server offline — saved locally only');
-            _markServerOffline(postEl);
-          }
           dbg('saved match:', match.id, info.devopsHits.join(', '));
 
           // Step 1 — sync to Notion immediately so data is never lost
@@ -2107,6 +2103,18 @@ try {
 
     if (message.action === 'matchSavedByOther' && message.url) {
       _markSavedByOther(message.url, message.savedBy);
+      return true;
+    }
+
+    if (message.action === 'serverSyncQueued') {
+      // Server was offline when save fired — show pill on the matching post
+      const POST_SELECTORS_ALL = [...POST_SELECTORS, ...POST_ROOT_SELECTORS];
+      for (const sel of POST_SELECTORS_ALL) {
+        document.querySelectorAll(sel).forEach((postEl) => {
+          if (message.url && getPostUrl(postEl) !== message.url) return;
+          _markServerOffline(postEl);
+        });
+      }
       return true;
     }
 
