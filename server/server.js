@@ -49,6 +49,17 @@ db.exec(`
     tokens     INTEGER,
     created_at INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS ai_requests (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    hash       TEXT,
+    model      TEXT,
+    tokens     INTEGER,
+    time_ms    INTEGER,
+    cached     INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_ai_requests_created ON ai_requests(created_at);
 `).catch(err => { console.error('DB init error:', err); process.exit(1); });
 
 // ---- Express ----------------------------------------------------------------
@@ -112,6 +123,10 @@ function drainAIQueue() {
           'INSERT OR REPLACE INTO ai_cache (text_hash, analysis, model, time_ms, tokens, created_at) VALUES (?, ?, ?, ?, ?, ?)',
           [hash, JSON.stringify(result.analysis), result.model, result.timeToProcess, result.tokens, Date.now()]
         ).catch(() => {});
+        db.run(
+          'INSERT INTO ai_requests (hash, model, tokens, time_ms, cached, created_at) VALUES (?, ?, ?, ?, 0, ?)',
+          [hash, result.model, result.tokens, result.timeToProcess, Date.now()]
+        ).catch(() => {});
         broadcast({ action: 'aiComplete', model: result.model, timeMs: result.timeToProcess, tokens: result.tokens, cacheSize: aiCache.size });
       } else {
         broadcast({ action: 'aiError', error: result.error });
@@ -171,6 +186,7 @@ app.post('/save', async (req, res) => {
   try {
     const { match, userName } = req.body;
     if (!match?.id) return res.status(400).json({ error: 'missing match.id' });
+    const resolvedUser = userName || req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
 
     if (match.url) {
       const existing = await db.get('SELECT id, notion_page_id FROM matches WHERE url = ?', [match.url]);
@@ -182,10 +198,10 @@ app.post('/save', async (req, res) => {
     const now = Date.now();
     await db.run(
       'INSERT OR IGNORE INTO matches (id, url, saved_by, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
-      [match.id, match.url || null, userName || null, JSON.stringify(match), now, now]
+      [match.id, match.url || null, resolvedUser, JSON.stringify(match), now, now]
     );
 
-    broadcast({ action: 'newMatch', url: match.url, savedBy: userName || null });
+    broadcast({ action: 'newMatch', url: match.url, savedBy: resolvedUser });
     res.json({ saved: true, matchId: match.id });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -241,7 +257,12 @@ app.post('/ai', async (req, res) => {
   if (!text || !hash) return res.status(400).json({ error: 'missing text or hash' });
 
   if (aiCache.has(hash)) {
-    return res.json({ success: true, analysis: aiCache.get(hash), skipped: true });
+    const cached = aiCache.get(hash);
+    db.run(
+      'INSERT INTO ai_requests (hash, model, tokens, time_ms, cached, created_at) VALUES (?, ?, ?, ?, 1, ?)',
+      [hash, null, null, null, Date.now()]
+    ).catch(() => {});
+    return res.json({ success: true, analysis: cached, skipped: true });
   }
 
   const result = await new Promise(resolve => {
@@ -277,6 +298,56 @@ app.get('/stats', async (req, res) => {
       wsClients: clients.size,
       uptime: Math.floor(process.uptime()),
       byUser, recentMatches,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /chart-data — time-series and AI breakdown for dashboard charts
+app.get('/chart-data', async (req, res) => {
+  try {
+    const days = parseInt(req.query.days) || 14;
+    const cutoff = Date.now() - days * 86400000;
+
+    const [saveRows, aiRows, modelRows] = await Promise.all([
+      db.all(
+        `SELECT date(created_at/1000,'unixepoch') as d, COUNT(*) as n
+         FROM matches WHERE created_at >= ? GROUP BY d ORDER BY d`,
+        [cutoff]
+      ),
+      db.all(
+        `SELECT date(created_at/1000,'unixepoch') as d,
+                COUNT(*) as total,
+                SUM(cached) as hits
+         FROM ai_requests WHERE created_at >= ? GROUP BY d ORDER BY d`,
+        [cutoff]
+      ),
+      db.all(
+        `SELECT model, COUNT(*) as n, AVG(tokens) as avgTokens, AVG(time_ms) as avgMs
+         FROM ai_requests WHERE cached=0 AND model IS NOT NULL GROUP BY model ORDER BY n DESC`
+      ),
+    ]);
+
+    // Build label array for last N days
+    const labels = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date(Date.now() - i * 86400000);
+      labels.push(d.toISOString().slice(0, 10));
+    }
+    const toMap = rows => Object.fromEntries(rows.map(r => [r.d, r]));
+    const saveMap = toMap(saveRows);
+    const aiMap = toMap(aiRows);
+
+    res.json({
+      labels,
+      saves: labels.map(d => saveMap[d]?.n || 0),
+      analyzed: labels.map(d => (aiMap[d]?.total || 0)),
+      cacheHits: labels.map(d => (aiMap[d]?.hits || 0)),
+      byModel: modelRows.map(r => ({
+        model: r.model,
+        n: r.n,
+        avgTokens: Math.round(r.avgTokens || 0),
+        avgMs: Math.round(r.avgMs || 0),
+      })),
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -343,6 +414,9 @@ header h1{font-size:18px;font-weight:700;color:#f8fafc}
 .bar-fill{height:100%;border-radius:4px;transition:width .4s}
 .bar-fill.green{background:#22c55e}
 .bar-fill.purple{background:#a78bfa}
+.charts{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:0 24px 24px}
+@media(max-width:700px){.charts{grid-template-columns:1fr}}
+.chart-wrap{position:relative;height:220px}
 </style>
 </head>
 <body>
@@ -382,6 +456,18 @@ header h1{font-size:18px;font-weight:700;color:#f8fafc}
   </div>
 </div>
 
+<div class="charts">
+  <div class="panel">
+    <div class="panel-header">Jobs Analyzed vs Saved <span class="badge">14 days</span></div>
+    <div class="chart-wrap" style="padding:16px"><canvas id="chart-jobs"></canvas></div>
+  </div>
+  <div class="panel">
+    <div class="panel-header">AI Engine</div>
+    <div class="chart-wrap" style="padding:16px"><canvas id="chart-ai"></canvas></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <script>
 const WS_URL = 'ws://' + location.host + '/ws';
 const STATS_URL = '/stats';
@@ -462,6 +548,7 @@ function connectWS() {
       const urlShort = msg.url ? msg.url.replace('https://www.linkedin.com/','…/') : 'unknown';
       addFeedItem('SAVE', 'tag-save', 'New match'+by+' — <span style="color:#475569">'+urlShort+'</span>');
       loadStats();
+      loadCharts();
     } else if (msg.action === 'aiStart') {
       addFeedItem('AI', 'tag-ai', 'Ollama request started (queue: '+msg.queueDepth+')');
       document.getElementById('s-queue').textContent = msg.queueDepth;
@@ -475,6 +562,7 @@ function connectWS() {
       document.getElementById('lbl-lastjob').textContent = t;
       document.getElementById('lbl-model').textContent = msg.model;
       document.getElementById('lbl-tokens').textContent = msg.tokens;
+      loadCharts();
     } else if (msg.action === 'aiError') {
       addFeedItem('ERR', 'tag-err', 'AI error: '+msg.error);
       document.getElementById('s-active').textContent = 'idle';
@@ -489,9 +577,63 @@ function connectWS() {
   ws.onerror = () => ws.close();
 }
 
+// ---- Charts -----------------------------------------------------------------
+const CHART_DEFAULTS = {
+  responsive: true, maintainAspectRatio: false,
+  plugins: { legend: { labels: { color: '#94a3b8', font: { size: 11 } } } },
+  scales: {
+    x: { ticks: { color: '#64748b', font: { size: 10 }, maxRotation: 45 }, grid: { color: '#1e293b' } },
+    y: { ticks: { color: '#64748b', font: { size: 10 } }, grid: { color: '#1e293b' }, beginAtZero: true },
+  },
+};
+
+let jobChart, aiChart;
+
+function initCharts() {
+  const jobCtx = document.getElementById('chart-jobs').getContext('2d');
+  jobChart = new Chart(jobCtx, {
+    type: 'bar',
+    data: { labels: [], datasets: [
+      { label: 'Analyzed', data: [], backgroundColor: 'rgba(167,139,250,0.7)', borderColor: '#a78bfa', borderWidth: 1 },
+      { label: 'Saved',    data: [], backgroundColor: 'rgba(34,197,94,0.7)',   borderColor: '#22c55e', borderWidth: 1 },
+    ]},
+    options: { ...CHART_DEFAULTS, plugins: { ...CHART_DEFAULTS.plugins, tooltip: { callbacks: { title: t => t[0].label } } } },
+  });
+
+  const aiCtx = document.getElementById('chart-ai').getContext('2d');
+  aiChart = new Chart(aiCtx, {
+    type: 'line',
+    data: { labels: [], datasets: [
+      { label: 'AI Requests', data: [], borderColor: '#a78bfa', backgroundColor: 'rgba(167,139,250,0.1)', fill: true, tension: 0.3 },
+      { label: 'Cache Hits',  data: [], borderColor: '#22c55e', backgroundColor: 'rgba(34,197,94,0.1)',   fill: true, tension: 0.3 },
+    ]},
+    options: { ...CHART_DEFAULTS },
+  });
+}
+
+function loadCharts() {
+  fetch('/chart-data').then(r => r.json()).then(d => {
+    const shortLabels = d.labels.map(l => l.slice(5)); // MM-DD
+
+    jobChart.data.labels = shortLabels;
+    jobChart.data.datasets[0].data = d.analyzed;
+    jobChart.data.datasets[1].data = d.saves;
+    jobChart.update('none');
+
+    aiChart.data.labels = shortLabels;
+    aiChart.data.datasets[0].data = d.analyzed;
+    aiChart.data.datasets[1].data = d.cacheHits;
+    aiChart.update('none');
+  }).catch(() => {});
+}
+
+// Wait for Chart.js to load before init
+window.addEventListener('load', () => { initCharts(); loadCharts(); });
+
 connectWS();
 // Also poll stats every 15s as fallback
 setInterval(loadStats, 15000);
+setInterval(loadCharts, 30000);
 </script>
 </body>
 </html>`;
