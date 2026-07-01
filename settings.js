@@ -234,7 +234,7 @@ function loadOllamaSettings() {
 
 document.getElementById('btn-save-ollama').addEventListener('click', () => {
   const url = document.getElementById('ollama-url').value.trim() || 'http://localhost:11434';
-  const model = document.getElementById('ollama-model').value.trim() || 'gemma3';
+  const model = document.getElementById('ollama-model').value.trim() || 'qwen2.5:0.5b';
   const concurrency = parseInt(document.getElementById('ollama-concurrency').value, 10) || 1;
   const status = document.getElementById('ollama-status');
   chrome.storage.local.set({ ollamaUrl: url, ollamaModel: model, aiConcurrency: concurrency }, () => {
@@ -246,7 +246,7 @@ document.getElementById('btn-save-ollama').addEventListener('click', () => {
 
 document.getElementById('btn-test-ollama').addEventListener('click', () => {
   const url = (document.getElementById('ollama-url').value.trim() || 'http://localhost:11434').replace(/\/$/, '');
-  const model = document.getElementById('ollama-model').value.trim() || 'gemma3';
+  const model = document.getElementById('ollama-model').value.trim() || 'qwen2.5:0.5b';
   const status = document.getElementById('ollama-status');
   status.textContent = `Testing ${model} @ ${url}…`;
   status.style.color = '#757575';

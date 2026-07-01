@@ -16,6 +16,14 @@ const path       = require('path');
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3747;
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'scanner.db');
 
+// ---- Helpers ----------------------------------------------------------------
+
+function hashText(str) {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) h = ((h << 5) + h) ^ str.charCodeAt(i);
+  return (h >>> 0).toString(16);
+}
+
 // ---- Database ---------------------------------------------------------------
 
 const _db = new sqlite3.Database(DB_PATH);
@@ -61,6 +69,9 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_ai_requests_created ON ai_requests(created_at);
   CREATE INDEX IF NOT EXISTS idx_matches_created ON matches(created_at);
+  CREATE INDEX IF NOT EXISTS idx_matches_saved_by ON matches(saved_by);
+  CREATE INDEX IF NOT EXISTS idx_ai_cache_created ON ai_cache(created_at);
+  CREATE INDEX IF NOT EXISTS idx_ai_queue_created ON ai_queue(created_at);
 
   CREATE TABLE IF NOT EXISTS ai_queue (
     hash        TEXT PRIMARY KEY,
@@ -244,6 +255,7 @@ app.post('/save', async (req, res) => {
       [match.id, match.url || null, notionPageId, resolvedUser, JSON.stringify(match), now, now]
     );
 
+    _chartCache.clear(); // invalidate so next /chart-data fetch reflects this save
     broadcast({ action: 'newMatch', url: match.url, savedBy: resolvedUser });
     res.json({ saved: true, matchId: match.id });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -295,7 +307,7 @@ app.post('/ai', async (req, res) => {
   const {
     text, hash,
     ollamaUrl   = 'http://localhost:11434',
-    ollamaModel = 'gemma3',
+    ollamaModel = 'qwen2.5:0.5b',
   } = req.body;
   if (!text || !hash) return res.status(400).json({ error: 'missing text or hash' });
 
@@ -353,10 +365,16 @@ app.get('/stats', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// In-memory TTL cache for /chart-data — recalculating 4 GROUP BY aggregations every 30s is wasteful
+const _chartCache = new Map(); // key: days → { data, expiresAt }
+const CHART_CACHE_TTL = 10000; // 10s
+
 // GET /chart-data — time-series and AI breakdown for dashboard charts
 app.get('/chart-data', async (req, res) => {
   try {
     const days = parseInt(req.query.days) || 14;
+    const cached = _chartCache.get(days);
+    if (cached && cached.expiresAt > Date.now()) return res.json(cached.data);
     const cutoff = Date.now() - days * 86400000;
 
     const [saveRows, notionRows, aiRows, modelRows] = await Promise.all([
@@ -394,7 +412,7 @@ app.get('/chart-data', async (req, res) => {
     const notionMap = toMap(notionRows);
     const aiMap     = toMap(aiRows);
 
-    res.json({
+    const payload = {
       labels,
       saves:       labels.map(d => saveMap[d]?.n   || 0),
       notionSynced:labels.map(d => notionMap[d]?.n || 0),
@@ -406,7 +424,9 @@ app.get('/chart-data', async (req, res) => {
         avgTokens: Math.round(r.avgTokens || 0),
         avgMs: Math.round(r.avgMs || 0),
       })),
-    });
+    };
+    _chartCache.set(days, { data: payload, expiresAt: Date.now() + CHART_CACHE_TTL });
+    res.json(payload);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -466,6 +486,186 @@ app.post('/notion-dedup', async (req, res) => {
     const totalRemoved = dupes.reduce((n, d) => n + d.remove.length, 0);
     res.json({ dryRun, totalPages: pages.length, duplicateGroups: dupes.length, pagesRemoved: totalRemoved, dupes });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /notion-schema — inspect Notion DB property names and types
+app.get('/notion-schema', async (req, res) => {
+  const token = process.env.NOTION_TOKEN;
+  const dbId  = process.env.NOTION_DB_ID;
+  if (!token || !dbId) return res.status(400).json({ error: 'NOTION_TOKEN and NOTION_DB_ID env vars required' });
+
+  try {
+    const r = await fetch(`https://api.notion.com/v1/databases/${dbId}`, {
+      headers: { 'Authorization': `Bearer ${token}`, 'Notion-Version': '2022-06-28' },
+    });
+    if (!r.ok) throw new Error(`Notion ${r.status}: ${await r.text()}`);
+    const d = await r.json();
+    const props = Object.entries(d.properties).map(([name, val]) => ({ name, type: val.type }));
+    res.json({ databaseTitle: d.title?.[0]?.plain_text, properties: props });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Cancel flag for notion-fill-ai background job
+let _fillAICancelled = false;
+
+// POST /notion-fill-ai/cancel — signal the running fill job to stop
+app.post('/notion-fill-ai/cancel', (req, res) => {
+  _fillAICancelled = true;
+  broadcast({ action: 'notionFillCancelled' });
+  res.json({ ok: true });
+});
+
+// POST /notion-fill-ai — find Notion pages missing AI Role, run Ollama, update Notion
+// ?dry=true (default) → count only; ?dry=false → enqueue and process
+app.post('/notion-fill-ai', async (req, res) => {
+  const token       = process.env.NOTION_TOKEN;
+  const dbId        = process.env.NOTION_DB_ID;
+  const ollamaUrl   = (req.body.ollamaUrl   || 'http://localhost:11434').replace(/\/$/, '');
+  const ollamaModel = req.body.ollamaModel  || 'qwen2.5:0.5b';
+  const aiRoleProp  = req.body.aiRoleProp   || 'AI Role';
+  const dryRun      = req.query.dry !== 'false';
+
+  if (!token || !dbId) return res.status(400).json({ error: 'NOTION_TOKEN and NOTION_DB_ID env vars required' });
+
+  const nHeaders = {
+    'Authorization': `Bearer ${token}`,
+    'Notion-Version': '2022-06-28',
+    'Content-Type': 'application/json',
+  };
+
+  async function fetchAllPages() {
+    const pages = []; let cursor;
+    do {
+      const body = { page_size: 100 };
+      if (cursor) body.start_cursor = cursor;
+      const r = await fetch(`https://api.notion.com/v1/databases/${dbId}/query`, {
+        method: 'POST', headers: nHeaders, body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error(`Notion query ${r.status}: ${await r.text()}`);
+      const d = await r.json();
+      pages.push(...d.results);
+      cursor = d.has_more ? d.next_cursor : null;
+    } while (cursor);
+    return pages;
+  }
+
+  async function ensureAIRoleProperty() {
+    const r = await fetch(`https://api.notion.com/v1/databases/${dbId}`, { headers: nHeaders });
+    if (!r.ok) throw new Error(`Get DB schema ${r.status}`);
+    const schema = await r.json();
+    if (!schema.properties?.['AI Role']) {
+      const patch = await fetch(`https://api.notion.com/v1/databases/${dbId}`, {
+        method: 'PATCH', headers: nHeaders,
+        body: JSON.stringify({ properties: { 'AI Role': { rich_text: {} } } }),
+      });
+      if (!patch.ok) throw new Error(`Create AI Role property ${patch.status}: ${await patch.text()}`);
+    }
+  }
+
+  function pageIsMissingAIRole(page) {
+    const prop = page.properties?.[aiRoleProp];
+    if (!prop) return true;
+    if (prop.type === 'rich_text') return !prop.rich_text?.length || !prop.rich_text[0]?.plain_text?.trim();
+    if (prop.type === 'title')     return !prop.title?.length     || !prop.title[0]?.plain_text?.trim();
+    if (prop.type === 'select')    return !prop.select;
+    if (prop.type === 'multi_select') return !prop.multi_select?.length;
+    return true;
+  }
+
+  try {
+    const pages = await fetchAllPages();
+    const missing = pages.filter(pageIsMissingAIRole);
+
+    if (dryRun) {
+      return res.json({ total: pages.length, missingAIRole: missing.length, aiRoleProp, dryRun: true });
+    }
+
+    await ensureAIRoleProperty();
+
+    // Reset cancel flag and respond immediately — processing in background
+    _fillAICancelled = false;
+    res.json({ total: pages.length, missingAIRole: missing.length, enqueuing: true });
+
+    let processed = 0, skipped = 0, errors = 0;
+    broadcast({ action: 'notionFillStart', total: missing.length });
+
+    for (const page of missing) {
+      if (_fillAICancelled) break;
+
+      const pageUrl = page.properties?.URL?.url;
+      const row = pageUrl ? await db.get('SELECT id, data FROM matches WHERE url = ?', [pageUrl]) : null;
+      const matchData = row ? JSON.parse(row.data) : null;
+      const text = (matchData?.fullText || matchData?.snippet || '').trim();
+
+      if (!text) { skipped++; broadcast({ action: 'notionFillProgress', processed, skipped, errors, total: missing.length }); continue; }
+
+      const hash = hashText(text);
+
+      let analysis = aiCache.get(hash);
+      let timeMs = 0, tokens = 0, model = ollamaModel;
+
+      if (!analysis) {
+        await db.run(
+          'INSERT OR IGNORE INTO ai_queue (hash, text, ollama_url, ollama_model, created_at) VALUES (?, ?, ?, ?, ?)',
+          [hash, text, ollamaUrl, ollamaModel, Date.now()]
+        ).catch(() => {});
+
+        const result = await new Promise(resolve => {
+          aiQueue.push({ hash, text, ollamaUrl, ollamaModel, resolve });
+          drainAIQueue();
+        });
+
+        if (!result.success) { errors++; broadcast({ action: 'notionFillProgress', processed, skipped, errors, total: missing.length }); continue; }
+        analysis   = result.analysis;
+        timeMs     = result.timeToProcess || 0;
+        tokens     = result.tokens || 0;
+        model      = result.model || ollamaModel;
+      }
+
+      const titles     = Array.isArray(analysis.jobTitles) ? analysis.jobTitles.filter(Boolean) : [];
+      const roleText   = (titles.join(', ') || 'Unknown').substring(0, 2000);
+      const confidence = typeof analysis.confidence === 'number' ? analysis.confidence : null;
+
+      // Update SQLite match with AI results (only fields that were missing)
+      if (row?.id && matchData) {
+        matchData.aiAnalysis    = analysis;
+        matchData.aiAnalyzedAt  = Date.now();
+        matchData.aiTextHash    = hash;
+        matchData.aiTimeToProcess = timeMs;
+        matchData.aiTokens      = tokens;
+        matchData.aiModel       = model;
+        await db.run(
+          'UPDATE matches SET data = ?, updated_at = ? WHERE id = ?',
+          [JSON.stringify(matchData), Date.now(), row.id]
+        ).catch(() => {});
+      }
+
+      // Build Notion properties — only AI-related fields
+      const notionProps = {
+        [aiRoleProp]: { rich_text: [{ text: { content: roleText } }] },
+      };
+      if (confidence !== null) notionProps['AI Confidence'] = { number: confidence };
+      if (tokens)   notionProps['AI Tokens']   = { number: tokens };
+      if (timeMs)   notionProps['AI Time (ms)'] = { number: timeMs };
+      if (model)    notionProps['AI Model']     = { rich_text: [{ text: { content: model } }] };
+
+      const r = await fetch(`https://api.notion.com/v1/pages/${page.id}`, {
+        method: 'PATCH', headers: nHeaders,
+        body: JSON.stringify({ properties: notionProps }),
+      });
+
+      if (r.ok) { processed++; } else { errors++; }
+      broadcast({ action: 'notionFillProgress', processed, skipped, errors, total: missing.length });
+    }
+
+    const wasCancelled = _fillAICancelled;
+    _fillAICancelled = false;
+    broadcast({ action: 'notionFillComplete', processed, skipped, errors, total: missing.length, cancelled: wasCancelled });
+    console.log(`[notion-fill-ai] ${wasCancelled ? 'cancelled' : 'done'}: ${processed} updated, ${skipped} skipped, ${errors} errors`);
+  } catch (err) {
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+    else console.error('[notion-fill-ai] error after response:', err.message);
+  }
 });
 
 // GET /dashboard — real-time web dashboard
@@ -562,6 +762,15 @@ header h1{font-size:18px;font-weight:700;color:#f8fafc}
 .dedup-results td,.dedup-results th{padding:4px 8px;border-bottom:1px solid #334155;text-align:left}
 .dedup-results th{color:#64748b;font-size:10px;text-transform:uppercase}
 .dedup-results .url-cell{color:#60a5fa;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tool-status-box{margin-top:10px;padding:10px 14px;border-radius:6px;font-size:12px;line-height:1.6;display:none;border:1px solid #334155;background:#0f172a}
+.tool-status-box.visible{display:block}
+.tool-status-box.running{border-color:#7c3aed;color:#c4b5fd}
+.tool-status-box.success{border-color:#16a34a;color:#86efac}
+.tool-status-box.error{border-color:#dc2626;color:#fca5a5}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spinner{display:inline-block;width:10px;height:10px;border:2px solid #475569;border-top-color:#a78bfa;border-radius:50%;animation:spin .7s linear infinite;margin-right:6px;vertical-align:middle}
+.tool-progress{height:3px;background:#1e293b;border-radius:2px;margin-top:8px;overflow:hidden;display:none}
+.tool-progress-fill{height:100%;background:#7c3aed;border-radius:2px;transition:width .3s}
 </style>
 </head>
 <body>
@@ -641,7 +850,28 @@ header h1{font-size:18px;font-weight:700;color:#f8fafc}
         <button class="btn btn-danger" id="btn-run" onclick="runDedup(false)" disabled>Remove Duplicates</button>
         <span class="dedup-status" id="dedup-status">Set NOTION_TOKEN + NOTION_DB_ID env vars on server, then preview first.</span>
       </div>
+      <div class="tool-status-box" id="dedup-status-box"></div>
       <div class="dedup-results" id="dedup-results"></div>
+    </div>
+  </div>
+  <div class="tools-panel" style="margin-top:12px">
+    <div class="panel-header">Notion AI Role Fill</div>
+    <div class="tools-body">
+      <div class="tools-row" style="margin-bottom:10px;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-ghost" onclick="loadNotionSchema()" style="font-size:11px;padding:4px 10px">Inspect Schema</button>
+        <label style="font-size:11px;color:#94a3b8;display:flex;align-items:center;gap:4px">
+          Job Title prop: <input id="fill-role-prop" value="AI Role" style="background:#0f172a;border:1px solid #334155;color:#e2e8f0;padding:2px 6px;border-radius:4px;font-size:11px;width:120px">
+        </label>
+      </div>
+      <div class="tools-row">
+        <button class="btn btn-ghost" id="btn-fill-preview" onclick="runFillAI(true)">Check Missing</button>
+        <button class="btn btn-ghost" id="btn-fill-run" onclick="runFillAI(false)" disabled style="background:#7c3aed">Fill Missing AI Roles</button>
+        <button class="btn btn-danger" id="btn-fill-stop" onclick="stopFillAI()" disabled>Stop</button>
+        <span class="dedup-status" id="fill-status">Inspect schema first to confirm property names, then preview.</span>
+      </div>
+      <div class="tool-status-box" id="fill-status-box"></div>
+      <div class="tool-progress" id="fill-progress"><div class="tool-progress-fill" id="fill-progress-fill" style="width:0%"></div></div>
+      <div class="dedup-results" id="fill-results"></div>
     </div>
   </div>
 </div>
@@ -805,6 +1035,36 @@ function connectWS() {
     } else if (msg.action === 'aiError') {
       addFeedItem('ERR', 'tag-err', 'AI error: '+msg.error, ts);
       if (!ts) { document.getElementById('s-active').textContent = 'idle'; setAIProgress(0, false); }
+    } else if (msg.action === 'notionFillStart') {
+      addFeedItem('FILL', 'tag-ai', 'Notion fill-AI started — '+msg.total+' pages to process', ts);
+      if (!ts) { const s = document.getElementById('btn-fill-stop'); if (s) { s.disabled = false; s.textContent = 'Stop'; } }
+    } else if (msg.action === 'notionFillProgress' && !ts) {
+      const done = msg.processed + msg.skipped + msg.errors;
+      const pct  = msg.total ? Math.round((done / msg.total) * 100) : 0;
+      setToolStatus('fill-status-box', 'running',
+        'Processing ' + done + ' / ' + msg.total + ' — ' +
+        '<span style="color:#86efac">' + msg.processed + ' updated</span> · ' +
+        '<span style="color:#94a3b8">' + msg.skipped + ' skipped</span>' +
+        (msg.errors ? ' · <span style="color:#fca5a5">' + msg.errors + ' errors</span>' : '')
+      );
+      const fill = document.getElementById('fill-progress-fill');
+      if (fill) fill.style.width = pct + '%';
+    } else if (msg.action === 'notionFillCancelled' && !ts) {
+      setToolStatus('fill-status-box', 'error', '⏹ Stopped by user.');
+      const s = document.getElementById('btn-fill-stop'); if (s) { s.disabled = true; s.textContent = 'Stop'; }
+    } else if (msg.action === 'notionFillComplete') {
+      const label = msg.cancelled ? '⏹ Stopped' : '✓ Done';
+      addFeedItem('FILL', msg.cancelled ? 'tag-err' : 'tag-save',
+        'Notion fill-AI ' + (msg.cancelled ? 'stopped' : 'done') + ' — '+msg.processed+' updated, '+msg.skipped+' skipped, '+msg.errors+' errors', ts);
+      if (!ts) {
+        setToolStatus('fill-status-box', msg.cancelled ? 'error' : (msg.errors > 0 ? 'running' : 'success'),
+          label + ' — <b>' + msg.processed + '</b> updated, ' + msg.skipped + ' skipped' +
+          (msg.errors ? ', <span style="color:#fca5a5">' + msg.errors + ' errors</span>' : '')
+        );
+        const prog = document.getElementById('fill-progress'); if (prog) prog.style.display = 'none';
+        const s = document.getElementById('btn-fill-stop'); if (s) { s.disabled = true; s.textContent = 'Stop'; }
+        loadStats();
+      }
     }
   }
 
@@ -896,8 +1156,109 @@ connectWS();
 setInterval(loadStats, 15000);
 setInterval(loadCharts, 30000);
 
+// ---- Tool status helpers ----------------------------------------------------
+function setToolStatus(boxId, state, html) {
+  const box = document.getElementById(boxId);
+  if (!box) return;
+  box.className = 'tool-status-box visible ' + state;
+  box.innerHTML = state === 'running' ? '<span class="spinner"></span>' + html : html;
+}
+function clearToolStatus(boxId) {
+  const box = document.getElementById(boxId);
+  if (box) { box.className = 'tool-status-box'; box.innerHTML = ''; }
+}
+
 // ---- Notion Dedup -----------------------------------------------------------
 let dedupPreviewData = null;
+
+async function loadNotionSchema() {
+  const statusEl  = document.getElementById('fill-status');
+  const resultsEl = document.getElementById('fill-results');
+  statusEl.textContent = 'Loading Notion schema…';
+  resultsEl.style.display = 'none';
+  try {
+    const r = await fetch('/notion-schema');
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.status);
+    statusEl.textContent = 'DB: ' + (d.databaseTitle || 'Untitled') + ' — ' + d.properties.length + ' properties found. Set the correct names above.';
+    resultsEl.style.display = 'block';
+    resultsEl.innerHTML = '<table><tr><th>Property Name</th><th>Type</th></tr>'
+      + d.properties.map(p => '<tr><td style="color:#e2e8f0">' + p.name + '</td><td style="color:#64748b">' + p.type + '</td></tr>').join('')
+      + '</table>';
+  } catch (e) {
+    statusEl.textContent = '✗ Error: ' + e.message;
+  }
+}
+
+async function stopFillAI() {
+  const btn = document.getElementById('btn-fill-stop');
+  btn.disabled = true;
+  btn.textContent = 'Stopping…';
+  try {
+    await fetch('/notion-fill-ai/cancel', { method: 'POST' });
+  } catch (e) {
+    setToolStatus('fill-status-box', 'error', '✗ Cancel failed: ' + e.message);
+  }
+}
+
+async function runFillAI(dry) {
+  const statusEl   = document.getElementById('fill-status');
+  const resultsEl  = document.getElementById('fill-results');
+  const btnPrev    = document.getElementById('btn-fill-preview');
+  const btnRun     = document.getElementById('btn-fill-run');
+  const aiRoleProp = document.getElementById('fill-role-prop').value.trim() || 'AI Role';
+
+  btnPrev.disabled = true;
+  btnRun.disabled  = true;
+  resultsEl.style.display = 'none';
+
+  if (dry) {
+    setToolStatus('fill-status-box', 'running', 'Scanning Notion for missing "' + aiRoleProp + '"…');
+    statusEl.textContent = '';
+  } else {
+    setToolStatus('fill-status-box', 'running', 'Sending job to server…');
+  }
+
+  try {
+    const r = await fetch('/notion-fill-ai?dry=' + dry, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ aiRoleProp }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.status);
+
+    if (dry) {
+      const pct = d.total ? Math.round((d.missingAIRole / d.total) * 100) : 0;
+      const msg = d.missingAIRole === 0
+        ? '✓ All ' + d.total + ' pages already have "' + aiRoleProp + '".'
+        : d.missingAIRole + ' of ' + d.total + ' pages missing "' + aiRoleProp + '" (' + pct + '%).';
+      setToolStatus('fill-status-box', d.missingAIRole === 0 ? 'success' : 'running', msg);
+      statusEl.textContent = d.missingAIRole > 0 ? 'Click Fill to process.' : '';
+      btnRun.disabled = d.missingAIRole === 0;
+      resultsEl.style.display = 'block';
+      resultsEl.innerHTML = '<table><tr><th>Metric</th><th>Count</th></tr>'
+        + '<tr><td>Total Notion pages</td><td>' + d.total + '</td></tr>'
+        + '<tr><td style="color:#f87171">Missing "' + aiRoleProp + '"</td><td style="color:#f87171">' + d.missingAIRole + '</td></tr>'
+        + '<tr><td style="color:#22c55e">Already filled</td><td style="color:#22c55e">' + (d.total - d.missingAIRole) + '</td></tr>'
+        + '</table>';
+    } else {
+      // Processing happens in background — status updates come via WebSocket
+      const prog = document.getElementById('fill-progress');
+      const fill = document.getElementById('fill-progress-fill');
+      if (prog) { prog.style.display = 'block'; fill.style.width = '0%'; }
+      const stopBtn = document.getElementById('btn-fill-stop');
+      if (stopBtn) { stopBtn.disabled = false; stopBtn.textContent = 'Stop'; }
+      setToolStatus('fill-status-box', 'running', 'Processing 0 / ' + d.missingAIRole + ' pages via Ollama…');
+      statusEl.textContent = 'Watch Live Activity feed for per-page progress.';
+    }
+  } catch (e) {
+    setToolStatus('fill-status-box', 'error', '✗ ' + e.message);
+    statusEl.textContent = '';
+  }
+
+  btnPrev.disabled = false;
+}
 
 async function runDedup(dry) {
   const statusEl  = document.getElementById('dedup-status');
@@ -907,8 +1268,9 @@ async function runDedup(dry) {
 
   btnDry.disabled = true;
   btnRun.disabled = true;
-  statusEl.textContent = dry ? 'Scanning Notion…' : 'Archiving duplicates…';
+  statusEl.textContent = '';
   resultsEl.style.display = 'none';
+  setToolStatus('dedup-status-box', 'running', dry ? 'Scanning Notion for duplicates…' : 'Archiving duplicate pages…');
 
   try {
     const r = await fetch('/notion-dedup?dry=' + dry, { method: 'POST' });
@@ -918,10 +1280,9 @@ async function runDedup(dry) {
     if (dry) {
       dedupPreviewData = d;
       if (d.duplicateGroups === 0) {
-        statusEl.textContent = '✓ No duplicates found (' + d.totalPages + ' pages scanned).';
-        resultsEl.style.display = 'none';
+        setToolStatus('dedup-status-box', 'success', '✓ No duplicates found — ' + d.totalPages + ' pages scanned.');
       } else {
-        statusEl.textContent = 'Found ' + d.duplicateGroups + ' duplicate group(s), ' + d.pagesRemoved + ' pages to remove. Review below, then click Remove.';
+        setToolStatus('dedup-status-box', 'running', 'Found <b>' + d.duplicateGroups + '</b> duplicate group(s), <b>' + d.pagesRemoved + '</b> pages to remove. Review below, then click Remove.');
         btnRun.disabled = false;
         resultsEl.style.display = 'block';
         resultsEl.innerHTML = '<table><tr><th>URL</th><th>Keep (oldest)</th><th>Remove</th></tr>'
@@ -934,13 +1295,13 @@ async function runDedup(dry) {
       }
     } else {
       dedupPreviewData = null;
-      statusEl.textContent = '✓ Archived ' + d.pagesRemoved + ' duplicate page(s) from ' + d.duplicateGroups + ' group(s).';
+      setToolStatus('dedup-status-box', 'success', '✓ Archived <b>' + d.pagesRemoved + '</b> duplicate page(s) from <b>' + d.duplicateGroups + '</b> group(s).');
       resultsEl.style.display = 'none';
       addFeedItem('DEDUP', 'tag-save', 'Notion dedup: removed ' + d.pagesRemoved + ' pages');
       loadStats();
     }
   } catch (e) {
-    statusEl.textContent = '✗ Error: ' + e.message;
+    setToolStatus('dedup-status-box', 'error', '✗ ' + e.message);
   }
 
   btnDry.disabled = false;
