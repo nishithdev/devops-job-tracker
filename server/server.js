@@ -18,10 +18,11 @@ const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'scanner.db');
 
 // ---- Helpers ----------------------------------------------------------------
 
+// Must stay identical to hashText in background.js — cache keys are shared
 function hashText(str) {
   let h = 5381;
   for (let i = 0; i < str.length; i++) h = ((h << 5) + h) ^ str.charCodeAt(i);
-  return (h >>> 0).toString(16);
+  return (h >>> 0).toString(36);
 }
 
 // ---- Database ---------------------------------------------------------------
@@ -67,12 +68,6 @@ db.exec(`
     cached     INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
   );
-  CREATE INDEX IF NOT EXISTS idx_ai_requests_created ON ai_requests(created_at);
-  CREATE INDEX IF NOT EXISTS idx_matches_created ON matches(created_at);
-  CREATE INDEX IF NOT EXISTS idx_matches_saved_by ON matches(saved_by);
-  CREATE INDEX IF NOT EXISTS idx_ai_cache_created ON ai_cache(created_at);
-  CREATE INDEX IF NOT EXISTS idx_ai_queue_created ON ai_queue(created_at);
-
   CREATE TABLE IF NOT EXISTS ai_queue (
     hash        TEXT PRIMARY KEY,
     text        TEXT NOT NULL,
@@ -80,6 +75,12 @@ db.exec(`
     ollama_model TEXT NOT NULL,
     created_at  INTEGER NOT NULL
   );
+
+  CREATE INDEX IF NOT EXISTS idx_ai_requests_created ON ai_requests(created_at);
+  CREATE INDEX IF NOT EXISTS idx_matches_created ON matches(created_at);
+  CREATE INDEX IF NOT EXISTS idx_matches_saved_by ON matches(saved_by);
+  CREATE INDEX IF NOT EXISTS idx_ai_cache_created ON ai_cache(created_at);
+  CREATE INDEX IF NOT EXISTS idx_ai_queue_created ON ai_queue(created_at);
 `).catch(err => { console.error('DB init error:', err); process.exit(1); });
 
 // ---- Express ----------------------------------------------------------------
@@ -137,15 +138,29 @@ db.all('SELECT text_hash, analysis FROM ai_cache').then(rows => {
 }).catch(() => {});
 
 let aiActive = 0;
+let aiActiveHash = null;
 const aiQueue = [];
+
+// Recent failures so pollers can distinguish "failed" from "still pending"
+const aiFailures = new Map(); // hash → { error, ts }
+const AI_FAILURE_TTL = 10 * 60_000;
+
+function recordAIFailure(hash, error) {
+  aiFailures.set(hash, { error, ts: Date.now() });
+  for (const [h, f] of aiFailures) {
+    if (Date.now() - f.ts > AI_FAILURE_TTL) aiFailures.delete(h);
+  }
+}
 
 function drainAIQueue() {
   while (aiActive < 1 && aiQueue.length) {
     aiActive++;
     const { hash, text, ollamaUrl, ollamaModel, resolve } = aiQueue.shift();
+    aiActiveHash = hash;
     broadcast({ action: 'aiStart', queueDepth: aiQueue.length, hash: hash.slice(0, 8) });
     runOllama(text, ollamaUrl, ollamaModel).then(result => {
       aiActive--;
+      aiActiveHash = null;
       // Remove from persistent queue regardless of outcome
       db.run('DELETE FROM ai_queue WHERE hash = ?', [hash]).catch(() => {});
       if (result.success) {
@@ -160,6 +175,7 @@ function drainAIQueue() {
         ).catch(() => {});
         broadcast({ action: 'aiComplete', model: result.model, timeMs: result.timeToProcess, tokens: result.tokens, cacheSize: aiCache.size });
       } else {
+        recordAIFailure(hash, result.error);
         broadcast({ action: 'aiError', error: result.error });
       }
       resolve(result);
@@ -294,9 +310,13 @@ app.patch('/status', async (req, res) => {
   try {
     const { url, matchId, status } = req.body;
     if (!status) return res.status(400).json({ error: 'missing status' });
+    const row = await db.get('SELECT id, data FROM matches WHERE url = ? OR id = ?', [url || null, matchId || null]);
+    if (!row) return res.status(404).json({ error: 'match not found' });
+    const data = JSON.parse(row.data);
+    data.status = status;
     await db.run(
-      'UPDATE matches SET updated_at = ? WHERE url = ? OR id = ?',
-      [Date.now(), url || null, matchId || null]
+      'UPDATE matches SET data = ?, updated_at = ? WHERE id = ?',
+      [JSON.stringify(data), Date.now(), row.id]
     );
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -327,12 +347,23 @@ app.post('/ai', async (req, res) => {
     [hash, text, cleanUrl, ollamaModel, Date.now()]
   ).catch(() => {});
 
-  const result = await new Promise(resolve => {
-    aiQueue.push({ hash, text, ollamaUrl: cleanUrl, ollamaModel, resolve });
+  // Don't hold the HTTP request open for the whole queue — client polls GET /ai/:hash
+  if (aiActiveHash !== hash && !aiQueue.some(j => j.hash === hash)) {
+    aiFailures.delete(hash); // re-request clears stale failure
+    aiQueue.push({ hash, text, ollamaUrl: cleanUrl, ollamaModel, resolve: () => {} });
     drainAIQueue();
-  });
+  }
+  res.status(202).json({ queued: true, hash });
+});
 
-  res.json(result);
+// GET /ai/:hash — poll analysis result after a queued POST /ai
+app.get('/ai/:hash', (req, res) => {
+  const { hash } = req.params;
+  if (aiCache.has(hash)) return res.json({ success: true, analysis: aiCache.get(hash) });
+  if (aiActiveHash === hash || aiQueue.some(j => j.hash === hash)) return res.json({ pending: true });
+  const failure = aiFailures.get(hash);
+  if (failure) return res.json({ error: failure.error });
+  res.status(404).json({ error: 'unknown hash' });
 });
 
 // GET /health
@@ -713,12 +744,12 @@ app.post('/notion-fill-ai', async (req, res) => {
     const r = await fetch(`https://api.notion.com/v1/databases/${dbId}`, { headers: nHeaders });
     if (!r.ok) throw new Error(`Get DB schema ${r.status}`);
     const schema = await r.json();
-    if (!schema.properties?.['AI Role']) {
+    if (!schema.properties?.[aiRoleProp]) {
       const patch = await fetch(`https://api.notion.com/v1/databases/${dbId}`, {
         method: 'PATCH', headers: nHeaders,
-        body: JSON.stringify({ properties: { 'AI Role': { rich_text: {} } } }),
+        body: JSON.stringify({ properties: { [aiRoleProp]: { rich_text: {} } } }),
       });
-      if (!patch.ok) throw new Error(`Create AI Role property ${patch.status}: ${await patch.text()}`);
+      if (!patch.ok) throw new Error(`Create ${aiRoleProp} property ${patch.status}: ${await patch.text()}`);
     }
   }
 
@@ -1061,6 +1092,10 @@ let aiQueueTotal = 0, aiQueueDone = 0;
 let reconnectTimer = null;
 
 // ---- Helpers ----------------------------------------------------------------
+// Escape user-derived values before injecting into innerHTML (userName/URLs come from clients)
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
 function fmt(ms) {
   if (ms < 1000) return ms + 'ms';
   return (ms/1000).toFixed(1) + 's';
@@ -1126,14 +1161,14 @@ function loadStats() {
       ul.innerHTML = '<span style="font-size:12px;color:#475569">No saves yet</span>';
     } else {
       ul.innerHTML = d.byUser.map(u => {
-        const init = (u.saved_by||'?').charAt(0).toUpperCase();
+        const init = esc((u.saved_by||'?').charAt(0).toUpperCase());
         const notionBadge = u.unsynced > 0
           ? '<span class="user-notion notion-warn">⚠ '+u.unsynced+' unsynced</span>'
           : '<span class="user-notion notion-ok">✓ Notion</span>';
         return '<div class="user-row">'
           + '<div class="user-avatar">'+init+'</div>'
           + '<div class="user-meta">'
-          + '<div class="user-name">'+(u.saved_by||'Unknown')+'</div>'
+          + '<div class="user-name">'+esc(u.saved_by||'Unknown')+'</div>'
           + '<div class="user-last">'+ago(u.last_saved)+' · '+u.n+' saves · '+notionBadge+'</div>'
           + '</div>'
           + '</div>';
@@ -1195,19 +1230,19 @@ function connectWS() {
 
   function handleEvent(msg, ts) {
     if (msg.action === 'newMatch') {
-      const by = msg.savedBy ? ' by <b>'+msg.savedBy+'</b>' : '';
+      const by = msg.savedBy ? ' by <b>'+esc(msg.savedBy)+'</b>' : '';
       const urlShort = msg.url ? msg.url.replace('https://www.linkedin.com/','…/') : 'unknown';
-      addFeedItem('SAVE', 'tag-save', 'New match'+by+' — <span style="color:#475569">'+urlShort+'</span>', ts);
+      addFeedItem('SAVE', 'tag-save', 'New match'+by+' — <span style="color:#475569">'+esc(urlShort)+'</span>', ts);
     } else if (msg.action === 'aiStart') {
       aiQueueTotal = Math.max(aiQueueTotal, msg.queueDepth + 1);
       addFeedItem('AI', 'tag-ai', 'Ollama started (queue: '+msg.queueDepth+')', ts);
       if (!ts) { document.getElementById('s-queue-label').textContent = msg.queueDepth; document.getElementById('s-active').textContent = 'running'; setAIProgress(msg.queueDepth, true); }
     } else if (msg.action === 'aiComplete') {
       aiQueueDone++;
-      addFeedItem('DONE', 'tag-ai', msg.model+' · '+fmt(msg.timeMs)+' · '+msg.tokens+' tok · cache:'+msg.cacheSize, ts);
+      addFeedItem('DONE', 'tag-ai', esc(msg.model)+' · '+fmt(msg.timeMs)+' · '+msg.tokens+' tok · cache:'+msg.cacheSize, ts);
       if (!ts) { document.getElementById('s-cache').textContent = msg.cacheSize; document.getElementById('s-cache-label').textContent = msg.cacheSize; document.getElementById('s-active').textContent = 'idle'; setAIProgress(0, false); }
     } else if (msg.action === 'aiError') {
-      addFeedItem('ERR', 'tag-err', 'AI error: '+msg.error, ts);
+      addFeedItem('ERR', 'tag-err', 'AI error: '+esc(msg.error), ts);
       if (!ts) { document.getElementById('s-active').textContent = 'idle'; setAIProgress(0, false); }
     } else if (msg.action === 'notionFillStart') {
       addFeedItem('FILL', 'tag-ai', 'Notion fill-AI started — '+msg.total+' pages to process', ts);
@@ -1357,7 +1392,7 @@ async function loadNotionSchema() {
     statusEl.textContent = 'DB: ' + (d.databaseTitle || 'Untitled') + ' — ' + d.properties.length + ' properties found. Set the correct names above.';
     resultsEl.style.display = 'block';
     resultsEl.innerHTML = '<table><tr><th>Property Name</th><th>Type</th></tr>'
-      + d.properties.map(p => '<tr><td style="color:#e2e8f0">' + p.name + '</td><td style="color:#64748b">' + p.type + '</td></tr>').join('')
+      + d.properties.map(p => '<tr><td style="color:#e2e8f0">' + esc(p.name) + '</td><td style="color:#64748b">' + esc(p.type) + '</td></tr>').join('')
       + '</table>';
   } catch (e) {
     statusEl.textContent = '✗ Error: ' + e.message;
@@ -1461,7 +1496,7 @@ async function runDedup(dry) {
         resultsEl.style.display = 'block';
         resultsEl.innerHTML = '<table><tr><th>URL</th><th>Keep (oldest)</th><th>Remove</th></tr>'
           + d.dupes.map(row =>
-              '<tr><td class="url-cell" title="'+row.url+'">'+row.url+'</td>'
+              '<tr><td class="url-cell" title="'+esc(row.url)+'">'+esc(row.url)+'</td>'
               + '<td style="color:#22c55e;white-space:nowrap">'+row.keepCreated.slice(0,10)+'</td>'
               + '<td style="color:#f87171">'+row.remove.map(p=>p.created.slice(0,10)).join(', ')+'</td></tr>'
             ).join('')
@@ -1523,7 +1558,7 @@ async function runNotionImport(dry) {
       btnRun.disabled = d.updated === 0;
       resultsEl.style.display = 'block';
       resultsEl.innerHTML = '<table><tr><th>Page ID</th><th>Fields to update</th></tr>'
-        + d.changes.map(c => '<tr><td style="color:#e2e8f0">' + c.pageId + '</td><td style="color:#64748b">' + c.fields.join(', ') + '</td></tr>').join('')
+        + d.changes.map(c => '<tr><td style="color:#e2e8f0">' + esc(c.pageId) + '</td><td style="color:#64748b">' + esc(c.fields.join(', ')) + '</td></tr>').join('')
         + '</table>';
     } else {
       setToolStatus('import-status-box', 'success', '✓ Patched <b>' + d.updated + '</b> page(s).');

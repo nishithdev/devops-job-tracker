@@ -14,13 +14,17 @@ function _ensureDeviceId() {
 }
 _ensureDeviceId();
 
-// ---- Save write lock — prevents multi-tab race on same URL ------------------
-const _savingUrls = new Set();
-
-// Serial storage mutex — prevents concurrent read-modify-write races on devopsSavedMatches
+// Serial storage mutex — prevents concurrent read-modify-write races on devopsSavedMatches.
+// ALL read-modify-writes of devopsSavedMatches must go through this lock.
 let _storageLockQueue = Promise.resolve();
+function _withStorageLock(task) {
+  const run = _storageLockQueue.then(() => new Promise(task));
+  _storageLockQueue = run.catch(() => {});
+  return run;
+}
+
 function _updateMatch(matchId, fn) {
-  _storageLockQueue = _storageLockQueue.then(() => new Promise((resolve) => {
+  return _withStorageLock((resolve) => {
     chrome.storage.local.get(['devopsSavedMatches'], (res) => {
       const matches = res.devopsSavedMatches || [];
       const m = matches.find(m => m.id === matchId);
@@ -31,8 +35,7 @@ function _updateMatch(matchId, fn) {
         resolve();
       }
     });
-  }));
-  return _storageLockQueue;
+  });
 }
 
 // Handle keyboard shortcuts
@@ -479,6 +482,19 @@ async function _runOllamaRequest(text) {
   }
 }
 
+// Poll GET /ai/:hash until the queued job finishes, fails, or times out
+async function _pollServerAI(serverUrl, hash, timeoutMs = 180_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 2500));
+    const r = await fetch(`${serverUrl}/ai/${hash}`);
+    if (r.status === 404) return { error: 'AI job lost on server' };
+    const d = await r.json();
+    if (!d.pending) return d;
+  }
+  return { error: 'AI request timed out' };
+}
+
 function handleAnalyzeWithAI(message, sendResponse) {
   const text = message.text || '';
   const incomingHash = hashText(text);
@@ -505,7 +521,9 @@ function handleAnalyzeWithAI(message, sendResponse) {
             ollamaModel: s.ollamaModel || 'gemma3',
           }),
         });
-        const result = await r.json();
+        let result = await r.json();
+        // Server no longer blocks on the queue — poll for the result
+        if (result.queued) result = await _pollServerAI(s.localServerUrl, incomingHash);
         if (result.success) result.textHash = incomingHash;
         sendResponse(result);
         return;
@@ -526,52 +544,49 @@ function handleAnalyzeWithAI(message, sendResponse) {
 // ---- Atomic saveMatch — local-first, parallel background sync ---------------
 // Priority: local storage (instant) → server + Notion fire in parallel after respond
 function handleSaveMatch(message, sendResponse) {
-  chrome.storage.local.get(['localServerUrl', 'notionUserName', 'devopsSavedMatches', 'deviceId'], (s) => {
-    const match = message.match;
-    const existing = s.devopsSavedMatches || [];
+  _withStorageLock((resolve) => {
+    chrome.storage.local.get(['localServerUrl', 'notionUserName', 'devopsSavedMatches', 'deviceId'], (s) => {
+      const match = message.match;
+      const existing = s.devopsSavedMatches || [];
 
-    // Layer 1 dedup: URL match in local storage (same Chrome profile)
-    if (match.url && existing.some(m => m.url === match.url)) {
-      sendResponse({ duplicate: true });
-      return;
-    }
-
-    // Write lock: prevent two tabs saving same URL simultaneously
-    if (match.url && _savingUrls.has(match.url)) {
-      sendResponse({ duplicate: true });
-      return;
-    }
-    if (match.url) _savingUrls.add(match.url);
-
-    // Stable identity: notionUserName > deviceId UUID > anonymous
-    const userName = s.notionUserName || s.deviceId || null;
-
-    // Save locally — respond immediately, don't wait for server or Notion
-    existing.unshift(match);
-    if (existing.length > 500) existing.length = 500;
-    chrome.storage.local.set({ devopsSavedMatches: existing }, () => {
-      if (chrome.runtime.lastError) {
-        if (match.url) _savingUrls.delete(match.url);
-        sendResponse({ error: chrome.runtime.lastError.message });
+      // Dedup: URL match in local storage (same Chrome profile).
+      // Lock serializes saves, so two tabs can't both pass this check.
+      if (match.url && existing.some(m => m.url === match.url)) {
+        sendResponse({ duplicate: true });
+        resolve();
         return;
       }
-      if (match.url) _savingUrls.delete(match.url);
-      _incrementBadge();
-      sendResponse({ saved: true }); // instant — content.js unblocked now
 
-      // Fire server POST in background (non-blocking)
-      if (s.localServerUrl) {
-        fetch(`${s.localServerUrl}/save`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ match, userName }),
-        }).then(r => r.json()).then(data => {
-          if (data.duplicate && data.notionPageId) {
-            // Another device already saved — pull their notionPageId into local
-            _updateMatch(match.id, m => { if (!m.notionPageId) m.notionPageId = data.notionPageId; });
-          }
-        }).catch(() => _enqueueServerSync(match)); // server offline — retry queue
-      }
+      // Stable identity: notionUserName > deviceId UUID > anonymous
+      const userName = s.notionUserName || s.deviceId || null;
+
+      // Save locally — respond immediately, don't wait for server or Notion
+      existing.unshift(match);
+      if (existing.length > 500) existing.length = 500;
+      chrome.storage.local.set({ devopsSavedMatches: existing }, () => {
+        if (chrome.runtime.lastError) {
+          sendResponse({ error: chrome.runtime.lastError.message });
+          resolve();
+          return;
+        }
+        resolve(); // release lock — remaining work doesn't touch devopsSavedMatches directly
+        _incrementBadge();
+        sendResponse({ saved: true }); // instant — content.js unblocked now
+
+        // Fire server POST in background (non-blocking)
+        if (s.localServerUrl) {
+          fetch(`${s.localServerUrl}/save`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ match, userName }),
+          }).then(r => r.json()).then(data => {
+            if (data.duplicate && data.notionPageId) {
+              // Another device already saved — pull their notionPageId into local
+              _updateMatch(match.id, m => { if (!m.notionPageId) m.notionPageId = data.notionPageId; });
+            }
+          }).catch(() => _enqueueServerSync(match)); // server offline — retry queue
+        }
+      });
     });
   });
   return true;
@@ -579,17 +594,20 @@ function handleSaveMatch(message, sendResponse) {
 
 // ---- Atomic updateMatchStatus (prevents multi-tab race on status writes) ----
 function handleUpdateMatchStatus(message, sendResponse) {
-  chrome.storage.local.get(['devopsSavedMatches'], (result) => {
-    const matches = result.devopsSavedMatches || [];
-    const m = matches.find(entry =>
-      (message.matchId && entry.id === message.matchId) ||
-      (message.url && entry.url === message.url) ||
-      (message.snippetPrefix && entry.snippet && entry.snippet.startsWith(message.snippetPrefix))
-    );
-    if (!m) { sendResponse({ error: 'not found' }); return; }
-    m.status = message.status;
-    chrome.storage.local.set({ devopsSavedMatches: matches }, () => {
-      sendResponse({ success: true });
+  _withStorageLock((resolve) => {
+    chrome.storage.local.get(['devopsSavedMatches'], (result) => {
+      const matches = result.devopsSavedMatches || [];
+      const m = matches.find(entry =>
+        (message.matchId && entry.id === message.matchId) ||
+        (message.url && entry.url === message.url) ||
+        (message.snippetPrefix && entry.snippet && entry.snippet.startsWith(message.snippetPrefix))
+      );
+      if (!m) { sendResponse({ error: 'not found' }); resolve(); return; }
+      m.status = message.status;
+      chrome.storage.local.set({ devopsSavedMatches: matches }, () => {
+        sendResponse({ success: true });
+        resolve();
+      });
     });
   });
   return true;
@@ -597,34 +615,37 @@ function handleUpdateMatchStatus(message, sendResponse) {
 
 // ---- Store AI analysis back into the saved match ----------------------------
 function handleStoreAIAnalysis(message, sendResponse) {
-  chrome.storage.local.get(['devopsSavedMatches'], (result) => {
-    const matches = result.devopsSavedMatches || [];
-    const match = matches.find(m => m.id === message.matchId);
-    if (!match) { sendResponse({ error: 'match not found' }); return; }
+  _withStorageLock((resolve) => {
+    chrome.storage.local.get(['devopsSavedMatches'], (result) => {
+      const matches = result.devopsSavedMatches || [];
+      const match = matches.find(m => m.id === message.matchId);
+      if (!match) { sendResponse({ error: 'match not found' }); resolve(); return; }
 
-    const incoming = message.analysis || {};
-    const missingFields = message.missingFields; // null = full replace, array = merge only these
-    if (missingFields && missingFields.length && match.aiAnalysis && !match.aiAnalysis._error) {
-      const existing = match.aiAnalysis;
-      if (missingFields.includes('Job Title')) {
-        existing.jobTitles = incoming.jobTitles;
-        existing.jobTitle  = incoming.jobTitle;
+      const incoming = message.analysis || {};
+      const missingFields = message.missingFields; // null = full replace, array = merge only these
+      if (missingFields && missingFields.length && match.aiAnalysis && !match.aiAnalysis._error) {
+        const existing = match.aiAnalysis;
+        if (missingFields.includes('Job Title')) {
+          existing.jobTitles = incoming.jobTitles;
+          existing.jobTitle  = incoming.jobTitle;
+        }
+        if (missingFields.includes('VISA'))          existing.visaSponsorship = incoming.visaSponsorship;
+        if (missingFields.includes('AI Confidence')) existing.confidence      = incoming.confidence;
+        match.aiAnalysis = existing;
+      } else {
+        match.aiAnalysis = incoming;
       }
-      if (missingFields.includes('VISA'))          existing.visaSponsorship = incoming.visaSponsorship;
-      if (missingFields.includes('AI Confidence')) existing.confidence      = incoming.confidence;
-      match.aiAnalysis = existing;
-    } else {
-      match.aiAnalysis = incoming;
-    }
-    delete match._missingFields;
-    match.aiAnalyzedAt = Date.now();
-    if (message.textHash) match.aiTextHash = message.textHash;
-    if (message.timeToProcess !== undefined) match.aiTimeToProcess = message.timeToProcess;
-    if (message.model) match.aiModel = message.model;
-    if (!match.status || match.status === 'new') match.status = 'ai_processed';
-    if (message.tokens !== undefined) match.aiTokens = message.tokens;
-    chrome.storage.local.set({ devopsSavedMatches: matches }, () => {
-      sendResponse({ success: true });
+      delete match._missingFields;
+      match.aiAnalyzedAt = Date.now();
+      if (message.textHash) match.aiTextHash = message.textHash;
+      if (message.timeToProcess !== undefined) match.aiTimeToProcess = message.timeToProcess;
+      if (message.model) match.aiModel = message.model;
+      if (!match.status || match.status === 'new') match.status = 'ai_processed';
+      if (message.tokens !== undefined) match.aiTokens = message.tokens;
+      chrome.storage.local.set({ devopsSavedMatches: matches }, () => {
+        sendResponse({ success: true });
+        resolve();
+      });
     });
   });
   return true;
