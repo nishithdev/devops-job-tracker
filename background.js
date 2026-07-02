@@ -304,9 +304,11 @@ async function _syncMatchToNotion(match) {
     return chunks;
   };
 
-  const dateStr = match.timestamp
-    ? new Date(match.timestamp).toISOString().split('T')[0]
-    : new Date().toISOString().split('T')[0];
+  const toLocalDate = (d) => {
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  };
+  const dateStr = toLocalDate(match.timestamp ? new Date(match.timestamp) : new Date());
 
   const buildProperties = () => {
     const props = {
