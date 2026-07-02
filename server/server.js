@@ -85,7 +85,7 @@ db.exec(`
 // ---- Express ----------------------------------------------------------------
 
 const app = express();
-app.use(express.json({ limit: '4mb' }));
+app.use(express.json({ limit: '50mb' }));
 
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -505,6 +505,166 @@ app.get('/notion-schema', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ---- Notion export/import (CSV round-trip) -----------------------------------
+
+const NOTION_SKIP_TYPES = new Set(['people', 'created_time', 'last_edited_time', 'formula', 'rollup']);
+
+function notionFlattenValue(prop) {
+  if (!prop) return '';
+  switch (prop.type) {
+    case 'title': return prop.title.map(t => t.plain_text).join('');
+    case 'rich_text': return prop.rich_text.map(t => t.plain_text).join('');
+    case 'select': return prop.select?.name || '';
+    case 'status': return prop.status?.name || '';
+    case 'multi_select': return prop.multi_select.map(s => s.name).join('; ');
+    case 'date': return prop.date ? (prop.date.end ? `${prop.date.start} -> ${prop.date.end}` : prop.date.start) : '';
+    case 'url': return prop.url || '';
+    case 'email': return prop.email || '';
+    case 'phone_number': return prop.phone_number || '';
+    case 'number': return prop.number ?? '';
+    case 'checkbox': return prop.checkbox ? 'true' : 'false';
+    case 'people': return prop.people.map(p => p.name || p.id).join('; ');
+    case 'created_time': return prop.created_time || '';
+    case 'last_edited_time': return prop.last_edited_time || '';
+    default: return '';
+  }
+}
+
+function notionCsvEscape(value) {
+  const s = String(value ?? '');
+  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+function notionBuildPropertyValue(type, rawValue) {
+  switch (type) {
+    case 'title': return { title: [{ type: 'text', text: { content: rawValue } }] };
+    case 'rich_text': return { rich_text: [{ type: 'text', text: { content: rawValue } }] };
+    case 'select': return { select: rawValue ? { name: rawValue } : null };
+    case 'status': return { status: rawValue ? { name: rawValue } : null };
+    case 'multi_select': return { multi_select: rawValue ? rawValue.split(';').map(s => ({ name: s.trim() })).filter(s => s.name) : [] };
+    case 'date': {
+      if (!rawValue) return { date: null };
+      const [start, end] = rawValue.split('->').map(s => s.trim());
+      return { date: { start, end: end || null } };
+    }
+    case 'url': return { url: rawValue || null };
+    case 'email': return { email: rawValue || null };
+    case 'phone_number': return { phone_number: rawValue || null };
+    case 'number': return { number: rawValue === '' ? null : Number(rawValue) };
+    case 'checkbox': return { checkbox: rawValue === 'true' };
+    default: return null;
+  }
+}
+
+function notionParseCsv(text) {
+  const rows = [];
+  let row = [], field = '', inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else inQuotes = false; }
+      else field += c;
+    } else {
+      if (c === '"') inQuotes = true;
+      else if (c === ',') { row.push(field); field = ''; }
+      else if (c === '\n' || c === '\r') {
+        if (c === '\r' && text[i + 1] === '\n') i++;
+        row.push(field); field = '';
+        if (row.length > 1 || row[0] !== '') rows.push(row);
+        row = [];
+      } else field += c;
+    }
+  }
+  if (field !== '' || row.length) { row.push(field); rows.push(row); }
+  const [header, ...body] = rows;
+  return body.map(r => Object.fromEntries(header.map((h, i) => [h, r[i] ?? ''])));
+}
+
+// GET /notion-export — download all Notion DB pages as CSV (includes page_id for round-trip)
+app.get('/notion-export', async (req, res) => {
+  const token = process.env.NOTION_TOKEN;
+  const dbId  = process.env.NOTION_DB_ID;
+  if (!token || !dbId) return res.status(400).json({ error: 'NOTION_TOKEN and NOTION_DB_ID env vars required on server' });
+
+  const nHeaders = { 'Authorization': `Bearer ${token}`, 'Notion-Version': '2022-06-28', 'Content-Type': 'application/json' };
+
+  try {
+    const pages = []; let cursor;
+    do {
+      const body = { page_size: 100 };
+      if (cursor) body.start_cursor = cursor;
+      const r = await fetch(`https://api.notion.com/v1/databases/${dbId}/query`, { method: 'POST', headers: nHeaders, body: JSON.stringify(body) });
+      if (!r.ok) throw new Error(`Notion query ${r.status}: ${await r.text()}`);
+      const d = await r.json();
+      pages.push(...d.results);
+      cursor = d.has_more ? d.next_cursor : null;
+    } while (cursor);
+
+    let csv = '';
+    if (pages.length) {
+      const columns = Object.keys(pages[0].properties);
+      const lines = [['page_id', ...columns].join(',')];
+      for (const page of pages) lines.push([page.id, ...columns.map(c => notionCsvEscape(notionFlattenValue(page.properties[c])))].join(','));
+      csv = lines.join('\n');
+    }
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="notion-export.csv"');
+    res.send(csv);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /notion-import — patch Notion pages from a processed CSV (must include page_id column)
+// body: { csv: string }, ?dry=true (default) previews changes, ?dry=false applies them
+app.post('/notion-import', async (req, res) => {
+  const token  = process.env.NOTION_TOKEN;
+  const dryRun = req.query.dry !== 'false';
+  if (!token) return res.status(400).json({ error: 'NOTION_TOKEN env var required on server' });
+  const csvText = req.body?.csv;
+  if (!csvText) return res.status(400).json({ error: 'Missing csv in request body' });
+
+  const nHeaders = { 'Authorization': `Bearer ${token}`, 'Notion-Version': '2022-06-28', 'Content-Type': 'application/json' };
+
+  try {
+    const rows = notionParseCsv(csvText);
+    if (rows.length === 0) return res.json({ dryRun, rows: 0, updated: 0, skipped: 0, changes: [] });
+    if (!('page_id' in rows[0])) return res.status(400).json({ error: 'CSV missing page_id column' });
+
+    const columns = Object.keys(rows[0]).filter(c => c !== 'page_id');
+    const changes = [];
+    let updated = 0, skipped = 0;
+
+    for (const row of rows) {
+      const pageId = row.page_id;
+      if (!pageId) { skipped++; continue; }
+
+      const pr = await fetch(`https://api.notion.com/v1/pages/${pageId}`, { headers: nHeaders });
+      if (!pr.ok) throw new Error(`Fetch page ${pageId} failed ${pr.status}: ${await pr.text()}`);
+      const page = await pr.json();
+
+      const properties = {};
+      for (const col of columns) {
+        const existing = page.properties[col];
+        if (!existing || NOTION_SKIP_TYPES.has(existing.type)) continue;
+        const value = notionBuildPropertyValue(existing.type, row[col]);
+        if (value) properties[col] = value;
+      }
+
+      if (Object.keys(properties).length === 0) { skipped++; continue; }
+
+      changes.push({ pageId, fields: Object.keys(properties) });
+      if (!dryRun) {
+        const patchRes = await fetch(`https://api.notion.com/v1/pages/${pageId}`, { method: 'PATCH', headers: nHeaders, body: JSON.stringify({ properties }) });
+        if (!patchRes.ok) throw new Error(`Patch ${pageId} failed ${patchRes.status}: ${await patchRes.text()}`);
+      }
+      updated++;
+    }
+
+    res.json({ dryRun, rows: rows.length, updated, skipped, changes });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Cancel flag for notion-fill-ai background job
 let _fillAICancelled = false;
 
@@ -872,6 +1032,20 @@ header h1{font-size:18px;font-weight:700;color:#f8fafc}
       <div class="tool-status-box" id="fill-status-box"></div>
       <div class="tool-progress" id="fill-progress"><div class="tool-progress-fill" id="fill-progress-fill" style="width:0%"></div></div>
       <div class="dedup-results" id="fill-results"></div>
+    </div>
+  </div>
+  <div class="tools-panel" style="margin-top:12px">
+    <div class="panel-header">Notion Export / Import (CSV)</div>
+    <div class="tools-body">
+      <div class="tools-row">
+        <button class="btn btn-ghost" onclick="exportNotionCsv()">Export to CSV</button>
+        <input type="file" id="import-file" accept=".csv" style="font-size:11px;color:#94a3b8">
+        <button class="btn btn-ghost" id="btn-import-preview" onclick="runNotionImport(true)">Preview Import</button>
+        <button class="btn btn-danger" id="btn-import-run" onclick="runNotionImport(false)" disabled>Apply Import</button>
+        <span class="dedup-status" id="import-status">Export, edit the CSV, then re-upload to patch Notion.</span>
+      </div>
+      <div class="tool-status-box" id="import-status-box"></div>
+      <div class="dedup-results" id="import-results"></div>
     </div>
   </div>
 </div>
@@ -1305,6 +1479,64 @@ async function runDedup(dry) {
   }
 
   btnDry.disabled = false;
+}
+
+// ---- Notion Export/Import ----------------------------------------------------
+function exportNotionCsv() {
+  window.location.href = '/notion-export';
+}
+
+let importCsvText = null;
+
+async function runNotionImport(dry) {
+  const statusEl  = document.getElementById('import-status');
+  const resultsEl = document.getElementById('import-results');
+  const btnPrev   = document.getElementById('btn-import-preview');
+  const btnRun    = document.getElementById('btn-import-run');
+  const fileInput = document.getElementById('import-file');
+
+  if (fileInput.files[0]) {
+    importCsvText = await fileInput.files[0].text();
+  }
+  if (!importCsvText) {
+    setToolStatus('import-status-box', 'error', '✗ Choose a CSV file first.');
+    return;
+  }
+
+  btnPrev.disabled = true;
+  btnRun.disabled = true;
+  resultsEl.style.display = 'none';
+  setToolStatus('import-status-box', 'running', dry ? 'Previewing changes…' : 'Patching Notion pages…');
+
+  try {
+    const r = await fetch('/notion-import?dry=' + dry, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ csv: importCsvText }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.status);
+
+    if (dry) {
+      setToolStatus('import-status-box', 'running', d.updated + ' of ' + d.rows + ' row(s) have changes, ' + d.skipped + ' unchanged/skipped. Review below, then Apply.');
+      statusEl.textContent = 'Click Apply Import to patch Notion.';
+      btnRun.disabled = d.updated === 0;
+      resultsEl.style.display = 'block';
+      resultsEl.innerHTML = '<table><tr><th>Page ID</th><th>Fields to update</th></tr>'
+        + d.changes.map(c => '<tr><td style="color:#e2e8f0">' + c.pageId + '</td><td style="color:#64748b">' + c.fields.join(', ') + '</td></tr>').join('')
+        + '</table>';
+    } else {
+      setToolStatus('import-status-box', 'success', '✓ Patched <b>' + d.updated + '</b> page(s).');
+      resultsEl.style.display = 'none';
+      statusEl.textContent = '';
+      btnRun.disabled = true;
+      addFeedItem('IMPORT', 'tag-save', 'Notion import: patched ' + d.updated + ' pages');
+    }
+  } catch (e) {
+    setToolStatus('import-status-box', 'error', '✗ ' + e.message);
+  }
+
+  btnPrev.disabled = false;
 }
 </script>
 </body>

@@ -225,6 +225,10 @@ const DEFAULT_INVALID_KEYWORDS = [
   "have skilled consultants ready ",
   "have skilled professionals",
   "available consultants",
+  "consultants available",
+  "consultants available",
+  "hotlist",
+  "bench",
 
   // Training / courses / bootcamps
   "bootcamp",
