@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="470" viewBox="0 0 860 470" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif">
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#78909c"/>
+    </marker>
+  </defs>
+
+  <text x="430" y="26" font-size="16" font-weight="700" fill="#263238" text-anchor="middle">classifyV2 — two-stage matching pipeline</text>
+
+  <!-- Stage 1: input -->
+  <rect x="40" y="46" width="230" height="52" rx="8" fill="#eceff1" stroke="#b0bec5"/>
+  <text x="155" y="68" font-size="12" font-weight="600" fill="#37474f" text-anchor="middle">Post body text (author only,</text>
+  <text x="155" y="84" font-size="12" font-weight="600" fill="#37474f" text-anchor="middle">no comments / reposts)</text>
+
+  <line x1="270" y1="72" x2="320" y2="72" stroke="#78909c" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Stage 2: normalize -->
+  <rect x="322" y="46" width="220" height="52" rx="8" fill="#e3f2fd" stroke="#64b5f6"/>
+  <text x="432" y="68" font-size="12" font-weight="600" fill="#0d47a1" text-anchor="middle">NFKC fold + lowercase</text>
+  <text x="432" y="84" font-size="11" fill="#1565c0" text-anchor="middle">𝗪𝗲'𝗿𝗲 𝗵𝗶𝗿𝗶𝗻𝗴 → we're hiring</text>
+
+  <line x1="542" y1="72" x2="592" y2="72" stroke="#78909c" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Stage 3: scoring -->
+  <rect x="594" y="36" width="226" height="76" rx="8" fill="#f3e5f5" stroke="#ba68c8"/>
+  <text x="707" y="56" font-size="12" font-weight="600" fill="#4a148c" text-anchor="middle">Sentence-level scoring</text>
+  <text x="707" y="72" font-size="10.5" fill="#6a1b9a" text-anchor="middle">keyword × context (hiring 28 / req 22 /</text>
+  <text x="707" y="86" font-size="10.5" fill="#6a1b9a" text-anchor="middle">neutral 10 / company 3) + role +14</text>
+  <text x="707" y="100" font-size="10.5" fill="#6a1b9a" text-anchor="middle">+ structural signals + negation −3</text>
+
+  <line x1="707" y1="112" x2="707" y2="150" stroke="#78909c" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Evidence gate -->
+  <rect x="560" y="152" width="294" height="58" rx="8" fill="#fff3e0" stroke="#ffb74d"/>
+  <text x="707" y="174" font-size="12" font-weight="700" fill="#e65100" text-anchor="middle">Evidence gate</text>
+  <text x="707" y="190" font-size="11" fill="#ef6c00" text-anchor="middle">role keyword OR ≥ 2 non-weak keywords</text>
+  <text x="707" y="203" font-size="10" fill="#f57c00" text-anchor="middle">("aws" / "python" / "linux" alone never match)</text>
+
+  <line x1="560" y1="181" x2="430" y2="181" stroke="#e53935" stroke-width="1.5" marker-end="url(#arr)" stroke-dasharray="4 3"/>
+  <text x="495" y="172" font-size="10.5" fill="#c62828" text-anchor="middle">weak-only evidence</text>
+
+  <rect x="330" y="162" width="100" height="38" rx="8" fill="#ffebee" stroke="#ef9a9a"/>
+  <text x="380" y="185" font-size="12" font-weight="600" fill="#b71c1c" text-anchor="middle">SKIP</text>
+
+  <line x1="707" y1="210" x2="707" y2="248" stroke="#78909c" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="720" y="234" font-size="10.5" fill="#546e7a">confidence 0–100</text>
+
+  <!-- Threshold bands -->
+  <rect x="60" y="250" width="760" height="64" rx="8" fill="#fafafa" stroke="#e0e0e0"/>
+  <!-- skip band -->
+  <rect x="70" y="260" width="180" height="44" rx="6" fill="#ffebee" stroke="#ef9a9a"/>
+  <text x="160" y="279" font-size="12" font-weight="700" fill="#b71c1c" text-anchor="middle">&lt; 25 · SKIP</text>
+  <text x="160" y="295" font-size="10.5" fill="#c62828" text-anchor="middle">logged if keywords hit</text>
+  <!-- gray band -->
+  <rect x="262" y="260" width="290" height="44" rx="6" fill="#ede9fe" stroke="#b39ddb"/>
+  <text x="407" y="279" font-size="12" font-weight="700" fill="#4527a0" text-anchor="middle">25 – 54 · GRAY ZONE</text>
+  <text x="407" y="295" font-size="10.5" fill="#5e35b1" text-anchor="middle">AI verdict decides (isJobPosting)</text>
+  <!-- match band -->
+  <rect x="564" y="260" width="246" height="44" rx="6" fill="#e8f5e9" stroke="#a5d6a7"/>
+  <text x="687" y="279" font-size="12" font-weight="700" fill="#1b5e20" text-anchor="middle">≥ 55 · AUTO MATCH</text>
+  <text x="687" y="295" font-size="10.5" fill="#2e7d32" text-anchor="middle">decorate + save immediately</text>
+
+  <!-- Gray zone resolution -->
+  <line x1="407" y1="314" x2="407" y2="352" stroke="#78909c" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="262" y="354" width="290" height="58" rx="8" fill="#ede9fe" stroke="#b39ddb"/>
+  <text x="407" y="376" font-size="12" font-weight="600" fill="#4527a0" text-anchor="middle">Ollama: isJobPosting?</text>
+  <text x="407" y="392" font-size="10.5" fill="#5e35b1" text-anchor="middle">schema-constrained JSON · hash-cached</text>
+  <text x="407" y="405" font-size="10.5" fill="#5e35b1" text-anchor="middle">AI down → legacy threshold 40 fallback</text>
+
+  <line x1="552" y1="383" x2="640" y2="383" stroke="#43a047" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="596" y="375" font-size="10.5" fill="#2e7d32" text-anchor="middle">true</text>
+  <rect x="642" y="364" width="130" height="38" rx="8" fill="#e8f5e9" stroke="#a5d6a7"/>
+  <text x="707" y="387" font-size="12" font-weight="600" fill="#1b5e20" text-anchor="middle">MATCH + save</text>
+
+  <line x1="262" y1="383" x2="174" y2="383" stroke="#e53935" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="218" y="375" font-size="10.5" fill="#c62828" text-anchor="middle">false</text>
+  <rect x="44" y="364" width="130" height="38" rx="8" fill="#ffebee" stroke="#ef9a9a"/>
+  <text x="109" y="387" font-size="12" font-weight="600" fill="#b71c1c" text-anchor="middle">SKIP</text>
+
+  <!-- Decision log strip -->
+  <rect x="60" y="430" width="760" height="28" rx="6" fill="#eceff1" stroke="#b0bec5"/>
+  <text x="440" y="448" font-size="11" fill="#455a64" text-anchor="middle">Every decision (match / gray / skip-with-evidence) → devopsDecisionLog with feature vector → scripts/analyze-decisions.js fits weights from your saves &amp; clicks</text>
+</svg>

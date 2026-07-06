@@ -11,124 +11,201 @@
       padding: 0;
     }
 
+    :root {
+      --sys-bg:        #F2F2F7;
+      --sys-bg2:       #FFFFFF;
+      --sys-bg3:       #F2F2F7;
+      --sys-fill:      rgba(120,120,128,0.12);
+      --sys-fill2:     rgba(120,120,128,0.08);
+      --sys-sep:       rgba(60,60,67,0.12);
+      --sys-label:     #000000;
+      --sys-label2:    rgba(60,60,67,0.6);
+      --sys-label3:    rgba(60,60,67,0.3);
+      --sys-blue:      #007AFF;
+      --sys-blue-bg:   rgba(0,122,255,0.10);
+      --sys-green:     #34C759;
+      --sys-green-bg:  rgba(52,199,89,0.10);
+      --sys-orange:    #FF9500;
+      --sys-orange-bg: rgba(255,149,0,0.10);
+      --sys-red:       #FF3B30;
+      --sys-red-bg:    rgba(255,59,48,0.10);
+      --r-card:        14px;
+      --r-btn:         10px;
+      --r-pill:        100px;
+      --shadow-pop:    0 8px 40px rgba(0,0,0,0.14), 0 2px 8px rgba(0,0,0,0.08);
+      --font: 'General Sans', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif;
+    }
+
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #f5f5f5;
-      color: #1d1d1f;
-      padding: 20px;
+      font-family: var(--font);
+      background: var(--sys-bg);
+      color: var(--sys-label);
+      padding: 24px;
       line-height: 1.6;
     }
 
     .container {
-      max-width: 100%;
+      max-width: 1400px;
       margin: 0 auto;
       width: 100%;
+      background: var(--sys-bg2);
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: var(--shadow-pop);
     }
 
     header {
-      background: white;
-      padding: 20px 24px;
-      border-radius: 12px;
-      margin-bottom: 20px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      padding: 22px 24px 18px;
+      border-bottom: 1px solid var(--sys-sep);
       display: flex;
       justify-content: space-between;
-      align-items: center;
+      align-items: flex-start;
     }
 
     h1 {
-      font-size: 24px;
-      font-weight: 600;
-      color: #2e7d32;
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--sys-label);
+      margin-bottom: 3px;
     }
 
     .header-meta {
-      font-size: 14px;
-      color: #666;
+      font-size: 13px;
+      color: var(--sys-label2);
     }
 
+    .header-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--sys-blue);
+      color: white;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      font-family: var(--font);
+      transition: opacity 0.15s;
+    }
+
+    button:hover {
+      opacity: 0.85;
+    }
+
+    button.secondary {
+      background: var(--sys-fill);
+      color: var(--sys-label);
+    }
+
+    button.warning {
+      background: var(--sys-orange-bg);
+      color: var(--sys-orange);
+    }
+
+    button.danger {
+      background: var(--sys-red);
+      color: white;
+    }
+
+    /* Stats strip */
+    .stats-bar {
+      display: flex;
+      border-bottom: 1px solid var(--sys-sep);
+    }
+
+    .stat {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 14px 20px;
+      border-right: 1px solid var(--sys-sep);
+    }
+
+    .stat:last-child {
+      border-right: none;
+    }
+
+    .stat-label {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--sys-label2);
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      margin-bottom: 3px;
+    }
+
+    .stat-value {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--sys-label);
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.02em;
+    }
+
+    .stat-value--hiring { color: var(--sys-green); }
+    .stat-value--devops { color: var(--sys-blue); }
+    .stat-value--duplicates { color: var(--sys-orange); }
+
+    /* Filter bar */
     .controls {
       display: flex;
-      gap: 10px;
-      margin-bottom: 20px;
+      gap: 8px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--sys-sep);
+      background: var(--sys-bg3);
       flex-wrap: wrap;
       align-items: center;
     }
 
-    button {
-      background: #2e7d32;
-      color: white;
-      border: none;
-      padding: 10px 18px;
-      border-radius: 8px;
-      cursor: pointer;
-      font-size: 14px;
-      font-weight: 500;
-      transition: background 0.2s;
-    }
-
-    button:hover {
-      background: #388e3c;
-    }
-
-    button:active {
-      background: #1b5e20;
-    }
-
-    button.secondary {
-      background: #666;
-    }
-
-    button.secondary:hover {
-      background: #777;
-    }
-
-    button.danger {
-      background: #d32f2f;
-    }
-
-    button.danger:hover {
-      background: #f44336;
-    }
-
     .filter-group {
       display: flex;
-      gap: 10px;
+      gap: 8px;
       align-items: center;
       flex: 1;
+      flex-wrap: wrap;
     }
 
     .filter-input {
-      background: white;
-      border: 1px solid #ddd;
-      color: #1d1d1f;
-      padding: 10px 14px;
-      border-radius: 8px;
-      font-size: 14px;
+      background: var(--sys-bg2);
+      border: 1px solid var(--sys-sep);
+      color: var(--sys-label);
+      padding: 8px 12px;
+      border-radius: 9px;
+      font-size: 13px;
+      font-family: var(--font);
       flex: 1;
       min-width: 200px;
+      outline: none;
     }
 
     .filter-input::placeholder {
-      color: #999;
+      color: var(--sys-label3);
     }
 
     select {
-      background: white;
-      border: 1px solid #ddd;
-      color: #1d1d1f;
-      padding: 10px 14px;
-      border-radius: 8px;
-      font-size: 14px;
+      background: var(--sys-bg2);
+      border: 1px solid var(--sys-sep);
+      color: var(--sys-label);
+      padding: 8px 12px;
+      border-radius: 9px;
+      font-size: 13px;
+      font-family: var(--font);
       cursor: pointer;
     }
 
     .matches-container {
-      background: white;
-      border-radius: 12px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
       overflow-x: auto;
-      max-height: calc(100vh - 320px);
+      max-height: calc(100vh - 380px);
       overflow-y: auto;
       position: relative;
     }
@@ -140,8 +217,6 @@
     }
 
     thead {
-      background: #f5f5f5;
-      border-bottom: 2px solid #e0e0e0;
       position: sticky;
       top: 0;
       z-index: 10;
@@ -149,19 +224,21 @@
 
     th {
       text-align: left;
-      padding: 12px 16px;
-      font-size: 13px;
+      padding: 10px 14px;
+      font-size: 11px;
       font-weight: 600;
-      color: #666;
+      color: var(--sys-label2);
       text-transform: uppercase;
-      letter-spacing: 0.5px;
+      letter-spacing: 0.06em;
       cursor: pointer;
       user-select: none;
       position: relative;
+      background: var(--sys-bg3);
+      border-bottom: 1px solid var(--sys-sep);
     }
 
     th:hover {
-      background: #ebebeb;
+      background: var(--sys-fill);
     }
 
     th.sortable::after {
@@ -173,38 +250,35 @@
     th.sorted-asc::after {
       content: ' ▲';
       opacity: 1;
-      color: #2e7d32;
+      color: var(--sys-blue);
     }
 
     th.sorted-desc::after {
       content: ' ▼';
       opacity: 1;
-      color: #2e7d32;
+      color: var(--sys-blue);
     }
 
     th input[type="checkbox"] {
       cursor: pointer;
-      width: 16px;
-      height: 16px;
+      width: 15px;
+      height: 15px;
+      accent-color: var(--sys-blue);
     }
 
     td {
-      padding: 16px;
-      border-bottom: 1px solid #f0f0f0;
+      padding: 13px 14px;
+      border-bottom: 1px solid var(--sys-sep);
       vertical-align: top;
-      font-size: 14px;
+      font-size: 13px;
     }
 
-    tr:hover {
-      background: #fafafa;
+    tr:hover td {
+      background: var(--sys-fill2);
     }
 
-    tr.selected {
-      background: #e8f5e9;
-    }
-
-    tr.selected:hover {
-      background: #d4edda;
+    tr.selected td {
+      background: var(--sys-blue-bg);
     }
 
     tr:last-child td {
@@ -218,13 +292,14 @@
 
     .col-select input[type="checkbox"] {
       cursor: pointer;
-      width: 16px;
-      height: 16px;
+      width: 15px;
+      height: 15px;
+      accent-color: var(--sys-blue);
     }
 
     .col-timestamp {
-      color: #666;
-      font-size: 13px;
+      color: var(--sys-label2);
+      font-size: 12px;
       white-space: nowrap;
       min-width: 120px;
     }
@@ -235,7 +310,7 @@
 
     .col-snippet {
       max-width: 800px;
-      color: #333;
+      color: var(--sys-label2);
       line-height: 1.5;
       white-space: pre-wrap;
       word-wrap: break-word;
@@ -256,29 +331,31 @@
     }
 
     .badge {
-      display: inline-block;
-      padding: 4px 10px;
-      border-radius: 6px;
-      font-size: 12px;
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 9px;
+      border-radius: var(--r-pill);
+      font-size: 11px;
       font-weight: 600;
+      letter-spacing: 0.01em;
       margin-bottom: 4px;
     }
 
     .badge-hiring {
-      background: #e8f5e9;
-      color: #2e7d32;
+      background: var(--sys-red-bg);
+      color: var(--sys-red);
     }
 
     .badge-devops {
-      background: #e3f2fd;
-      color: #1565c0;
+      background: var(--sys-blue-bg);
+      color: var(--sys-blue);
     }
 
     .email-link {
-      color: #1565c0;
+      color: var(--sys-blue);
       text-decoration: none;
       display: block;
-      font-size: 13px;
+      font-size: 12px;
       margin-bottom: 4px;
     }
 
@@ -287,99 +364,66 @@
     }
 
     .btn-open {
-      background: #2e7d32;
+      display: inline-flex;
+      align-items: center;
+      background: var(--sys-green);
       color: white;
       border: none;
       padding: 6px 12px;
-      border-radius: 6px;
+      border-radius: 8px;
       cursor: pointer;
-      font-size: 13px;
-      font-weight: 500;
+      font-size: 12px;
+      font-weight: 600;
       text-decoration: none;
-      display: inline-block;
-      transition: background 0.2s;
+      transition: opacity 0.15s;
       margin-right: 6px;
     }
 
     .btn-open:hover {
-      background: #388e3c;
+      opacity: 0.85;
     }
 
     .btn-delete {
-      background: #fff;
-      color: #d32f2f;
-      border: 1px solid #d32f2f;
+      background: var(--sys-red-bg);
+      color: var(--sys-red);
+      border: none;
       padding: 6px 12px;
-      border-radius: 6px;
+      border-radius: 8px;
       cursor: pointer;
-      font-size: 13px;
-      font-weight: 500;
-      transition: all 0.2s;
+      font-size: 12px;
+      font-weight: 600;
+      transition: opacity 0.15s;
     }
 
     .btn-delete:hover {
-      background: #d32f2f;
-      color: white;
+      opacity: 0.75;
     }
 
     .empty-state {
-      background: white;
       padding: 60px 40px;
       text-align: center;
-      border-radius: 12px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
     }
 
     .empty-state h2 {
-      font-size: 20px;
-      color: #666;
-      margin-bottom: 12px;
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--sys-label2);
+      margin-bottom: 8px;
     }
 
     .empty-state p {
-      color: #999;
-      font-size: 14px;
-    }
-
-    .stats-bar {
-      background: white;
-      padding: 16px 20px;
-      border-radius: 12px;
-      margin-bottom: 20px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-      display: flex;
-      gap: 24px;
-      align-items: center;
-    }
-
-    .stat {
-      display: flex;
-      flex-direction: column;
-    }
-
-    .stat-label {
-      font-size: 12px;
-      color: #666;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-
-    .stat-value {
-      font-size: 24px;
-      font-weight: 700;
-      color: #2e7d32;
-      margin-top: 4px;
+      color: var(--sys-label3);
+      font-size: 13px;
     }
 
     .bulk-actions {
-      background: #fff3cd;
-      border: 1px solid #ffc107;
-      padding: 12px 20px;
-      border-radius: 8px;
-      margin-bottom: 16px;
+      background: var(--sys-orange-bg);
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--sys-sep);
       display: none;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
+      flex-wrap: wrap;
     }
 
     .bulk-actions.visible {
@@ -388,41 +432,37 @@
 
     .bulk-actions-text {
       flex: 1;
-      font-size: 14px;
-      font-weight: 500;
-      color: #856404;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--sys-orange);
     }
 
     .pagination {
-      background: white;
-      padding: 16px 20px;
-      border-radius: 12px;
-      margin-top: 20px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      padding: 12px 20px;
+      border-top: 1px solid var(--sys-sep);
       display: flex;
       justify-content: space-between;
       align-items: center;
     }
 
     .pagination-info {
-      font-size: 14px;
-      color: #666;
+      font-size: 13px;
+      color: var(--sys-label2);
     }
 
     .pagination-controls {
       display: flex;
-      gap: 8px;
+      gap: 6px;
     }
 
     .pagination-controls button {
-      padding: 8px 16px;
-      font-size: 13px;
+      background: var(--sys-fill);
+      color: var(--sys-label);
     }
 
     .pagination-controls button:disabled {
-      background: #ccc;
       cursor: not-allowed;
-      opacity: 0.5;
+      opacity: 0.35;
     }
   </style>
 </head>
@@ -433,30 +473,38 @@
         <h1>Saved Matches</h1>
         <div class="header-meta" id="total-count">0 matches saved</div>
       </div>
+      <div class="header-actions">
+        <button id="btn-copy-emails" class="secondary">Copy All Emails</button>
+        <button id="btn-export" class="secondary">Export JSON</button>
+        <button id="btn-export-csv" class="secondary">Export CSV</button>
+        <button id="btn-clean-duplicates" class="warning">Clean Duplicates</button>
+        <button id="btn-clear-all" class="danger">Clear All</button>
+        <button id="btn-refresh">Refresh</button>
+      </div>
     </header>
 
     <div class="stats-bar">
       <div class="stat">
-        <span class="stat-label">Total Saved</span>
+        <span class="stat-label">Total</span>
         <span class="stat-value" id="stat-total">0</span>
       </div>
       <div class="stat">
-        <span class="stat-label">With Hiring Signal</span>
-        <span class="stat-value" id="stat-hiring">0</span>
+        <span class="stat-label">Hiring Signal</span>
+        <span class="stat-value stat-value--hiring" id="stat-hiring">0</span>
       </div>
       <div class="stat">
         <span class="stat-label">DevOps Only</span>
-        <span class="stat-value" id="stat-devops">0</span>
+        <span class="stat-value stat-value--devops" id="stat-devops">0</span>
       </div>
       <div class="stat">
         <span class="stat-label">Duplicates</span>
-        <span class="stat-value" style="color:#ff9800;" id="stat-duplicates">0</span>
+        <span class="stat-value stat-value--duplicates" id="stat-duplicates">0</span>
       </div>
     </div>
 
     <div class="controls">
       <div class="filter-group">
-        <input type="text" class="filter-input" id="filter-input" placeholder="Search by keyword, snippet, email, or skills...">
+        <input type="text" class="filter-input" id="filter-input" placeholder="Search matches…">
         <select id="filter-type">
           <option value="all">All Matches</option>
           <option value="hiring">Hiring Posts Only</option>
@@ -499,12 +547,6 @@
           <option value="all">Show All</option>
         </select>
       </div>
-      <button id="btn-refresh">Refresh</button>
-      <button id="btn-copy-emails" class="secondary">Copy All Emails</button>
-      <button id="btn-export" class="secondary">Export JSON</button>
-      <button id="btn-export-csv" class="secondary">Export CSV</button>
-      <button id="btn-clean-duplicates" class="secondary" style="background:#ff9800;">Clean Duplicates</button>
-      <button id="btn-clear-all" class="danger">Clear All</button>
     </div>
 
     <div class="bulk-actions" id="bulk-actions">
@@ -526,8 +568,8 @@
       <div class="pagination-info" id="pagination-info">Showing 1-50 of 100</div>
       <div class="pagination-controls">
         <button id="btn-first-page">First</button>
-        <button id="btn-prev-page">Previous</button>
-        <button id="btn-next-page">Next</button>
+        <button id="btn-prev-page">← Prev</button>
+        <button id="btn-next-page">Next →</button>
         <button id="btn-last-page">Last</button>
       </div>
     </div>
@@ -537,7 +579,7 @@
   <script src="shared/utils.js"></script>
   <script src="shared/storageUtils.js"></script>
   <script src="shared/formatters.js"></script>
-  
+
   <script src="saved.js"></script>
 </body>
 </html>

@@ -399,6 +399,18 @@ async function _syncMatchToNotion(match) {
   }
 }
 
+// ---- Label log (classifier feedback loop) -----------------------------------
+// User actions on saved matches — joined against devopsDecisionLog by URL in
+// scripts/analyze-decisions.js to produce training labels.
+function _logLabelEvent(event) {
+  chrome.storage.local.get(['devopsLabelLog'], (res) => {
+    let log = res.devopsLabelLog || [];
+    log.push({ ts: Date.now(), ...event });
+    if (log.length > 2000) log = log.slice(log.length - 2000);
+    chrome.storage.local.set({ devopsLabelLog: log });
+  });
+}
+
 // ---- Text hash (djb2) -------------------------------------------------------
 function hashText(str) {
   let h = 5381;
@@ -436,6 +448,20 @@ function _enqueueAI(text) {
 // Calls a local Ollama instance to extract structured fields from a post.
 // Returns: { jobTitles, visaSponsorship, confidence }
 
+// JSON schema passed as Ollama `format` — constrains decoding to exactly these
+// fields, so small models can't emit malformed JSON. Must stay identical to
+// AI_SCHEMA in server/server.js and to the fields described in AI_PROMPT.
+const AI_SCHEMA = {
+  type: 'object',
+  properties: {
+    isJobPosting:    { type: 'boolean' },
+    jobTitles:       { type: ['array', 'null'], items: { type: 'string' } },
+    visaSponsorship: { type: ['string', 'null'] },
+    confidence:      { type: 'integer', minimum: 0, maximum: 100 },
+  },
+  required: ['isJobPosting', 'jobTitles', 'visaSponsorship', 'confidence'],
+};
+
 const AI_PROMPT = (text) => [
   'You are a job post analyzer. Analyze the following LinkedIn post and extract structured information.',
   'Respond ONLY with a valid JSON object - no markdown, no explanation, no code fences.',
@@ -443,10 +469,12 @@ const AI_PROMPT = (text) => [
   text.substring(0, 1500),
   'JSON schema to fill:',
   '{',
+  '  "isJobPosting": true or false,',
   '  "jobTitles": ["role1", "role2"] or null,',
   '  "visaSponsorship": "short summary or null",',
   '  "confidence": 0-100',
   '}',
+  'For isJobPosting: true ONLY if the author is recruiting/hiring for a role. false for job seekers, courses, training, marketing, or general commentary.',
   'For jobTitles: Extract all distinct roles being hired for as an array. If only one role, return a single-element array. If none found, return null.',
   'For visaSponsorship: Extract exactly what visa statuses are mentioned.',
   'Examples: H1B sponsored, No H1B, GC/Citizen only, OPT/CPT accepted, No sponsorship, H1B transfer ok, GC EAD accepted.',
@@ -462,7 +490,7 @@ async function _runOllamaRequest(text) {
     const r = await fetch(`${url}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, prompt: AI_PROMPT(text), stream: false, format: 'json' }),
+      body: JSON.stringify({ model, prompt: AI_PROMPT(text), stream: false, format: AI_SCHEMA }),
     });
     const rawText = await r.text();
     if (!r.ok) {
@@ -502,8 +530,8 @@ function handleAnalyzeWithAI(message, sendResponse) {
   const incomingHash = hashText(text);
 
   chrome.storage.local.get(['localServerUrl', 'ollamaUrl', 'ollamaModel', 'devopsSavedMatches'], async (s) => {
-    // Check local cache first regardless of server
-    if (message.matchId) {
+    // Check local cache first regardless of server (skipped on force re-process)
+    if (message.matchId && !message.force) {
       const match = (s.devopsSavedMatches || []).find(m => m.id === message.matchId);
       if (match && match.aiTextHash === incomingHash && match.aiAnalysis && !match.aiAnalysis._error) {
         sendResponse({ success: true, analysis: match.aiAnalysis, skipped: true });
@@ -519,6 +547,7 @@ function handleAnalyzeWithAI(message, sendResponse) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             text, hash: incomingHash,
+            force: !!message.force,
             ollamaUrl: s.ollamaUrl || 'http://localhost:11434',
             ollamaModel: s.ollamaModel || 'gemma3',
           }),
@@ -606,6 +635,7 @@ function handleUpdateMatchStatus(message, sendResponse) {
       );
       if (!m) { sendResponse({ error: 'not found' }); resolve(); return; }
       m.status = message.status;
+      _logLabelEvent({ url: m.url || null, matchId: m.id, action: `status:${message.status}` });
       chrome.storage.local.set({ devopsSavedMatches: matches }, () => {
         sendResponse({ success: true });
         resolve();

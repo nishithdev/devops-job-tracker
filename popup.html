@@ -9,160 +9,244 @@
         margin: 0;
         padding: 0;
       }
+      :root {
+        --sys-bg:        #F2F2F7;
+        --sys-bg2:       #FFFFFF;
+        --sys-bg3:       #F2F2F7;
+        --sys-fill:      rgba(120,120,128,0.12);
+        --sys-fill2:     rgba(120,120,128,0.08);
+        --sys-sep:       rgba(60,60,67,0.12);
+        --sys-label:     #000000;
+        --sys-label2:    rgba(60,60,67,0.6);
+        --sys-label3:    rgba(60,60,67,0.3);
+        --sys-blue:      #007AFF;
+        --sys-blue-bg:   rgba(0,122,255,0.10);
+        --sys-green:     #34C759;
+        --sys-green-bg:  rgba(52,199,89,0.10);
+        --sys-orange:    #FF9500;
+        --sys-orange-bg: rgba(255,149,0,0.10);
+        --sys-red:       #FF3B30;
+        --sys-red-bg:    rgba(255,59,48,0.10);
+        --sys-purple:    #AF52DE;
+        --sys-purple-bg: rgba(175,82,222,0.10);
+        --r-card:        14px;
+        --r-btn:         10px;
+        --r-pill:        100px;
+        --shadow-card:   0 1px 0 rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06);
+        --font: 'General Sans', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif;
+      }
       body {
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-          sans-serif;
-        width: 380px;
-        background: #f5f5f7;
-        color: #1d1d1f;
+        font-family: var(--font);
+        width: 360px;
+        background: var(--sys-bg2);
+        color: var(--sys-label);
+        font-size: 14px;
       }
       .header {
-        background: linear-gradient(135deg, #1565c0 0%, #0d47a1 100%);
-        color: white;
-        padding: 16px 18px;
+        background: rgba(242,242,247,0.85);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        padding: 14px 16px 12px;
+        border-bottom: 1px solid var(--sys-sep);
+      }
+      .header-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .header-icon {
+        width: 28px;
+        height: 28px;
+        border-radius: 7px;
       }
       .header h1 {
-        font-size: 16px;
+        font-size: 14px;
         font-weight: 700;
-        margin: 0;
+        letter-spacing: -0.01em;
+        color: var(--sys-label);
       }
       .status-bar {
         display: flex;
         align-items: center;
-        gap: 8px;
-        margin-top: 8px;
-        font-size: 12px;
+        gap: 5px;
+        margin-top: 1px;
+        font-size: 11px;
+        color: var(--sys-label2);
       }
       .status-indicator {
-        width: 8px;
-        height: 8px;
+        width: 6px;
+        height: 6px;
         border-radius: 50%;
-        background: #4caf50;
+        background: var(--sys-green);
         animation: pulse 2s infinite;
+        flex-shrink: 0;
       }
       .status-indicator.idle {
-        background: #9e9e9e;
+        background: var(--sys-label3);
         animation: none;
       }
       .status-indicator.paused {
-        background: #ff9800;
+        background: var(--sys-orange);
         animation: none;
       }
       @keyframes pulse {
         0%, 100% { opacity: 1; }
-        50% { opacity: 0.5; }
+        50% { opacity: 0.4; }
       }
       .main {
-        padding: 16px 18px;
+        padding: 14px 14px 16px;
       }
       .stats {
         display: grid;
         grid-template-columns: 1fr 1fr 1fr;
-        gap: 10px;
-        margin-bottom: 16px;
+        gap: 1px;
+        background: var(--sys-sep);
+        border-radius: var(--r-card);
+        overflow: hidden;
+        margin-bottom: 12px;
       }
       .stat {
-        background: white;
-        border-radius: 8px;
-        padding: 12px;
+        background: var(--sys-bg2);
         text-align: center;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        padding: 12px 8px;
       }
       .stat__num {
-        font-size: 24px;
+        font-size: 26px;
         font-weight: 700;
         line-height: 1;
-        margin-bottom: 4px;
+        letter-spacing: -0.02em;
+        margin-bottom: 3px;
+        font-variant-numeric: tabular-nums;
       }
       .stat__num--match {
-        color: #2e7d32;
+        color: var(--sys-green);
       }
       .stat__num--analyzed {
-        color: #1565c0;
+        color: var(--sys-blue);
       }
       .stat__num--saved {
-        color: #f57c00;
+        color: var(--sys-orange);
       }
       .stat__lbl {
         font-size: 10px;
-        color: #666;
+        color: var(--sys-label2);
         text-transform: uppercase;
         font-weight: 600;
-        letter-spacing: 0.5px;
+        letter-spacing: 0.06em;
       }
       .section {
-        margin-bottom: 16px;
+        margin-bottom: 12px;
       }
       .section-title {
-        font-size: 12px;
-        font-weight: 700;
-        color: #666;
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--sys-label2);
         text-transform: uppercase;
-        margin-bottom: 10px;
-        letter-spacing: 0.5px;
+        margin-bottom: 7px;
+        letter-spacing: 0.06em;
+        padding: 0 2px;
+      }
+      .ai-progress {
+        background: var(--sys-bg3);
+        border-radius: 10px;
+        padding: 10px 12px;
+        margin-bottom: 12px;
+      }
+      .ai-progress__head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 6px;
+      }
+      .ai-progress__title {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--sys-label);
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .ai-progress__label {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--sys-purple);
+        font-variant-numeric: tabular-nums;
+      }
+      .ai-progress__track {
+        background: var(--sys-fill);
+        border-radius: 100px;
+        height: 4px;
+        overflow: hidden;
+      }
+      .ai-progress__bar {
+        background: var(--sys-purple);
+        height: 4px;
+        width: 0%;
+        border-radius: 100px;
+        transition: width 0.4s;
       }
       .autoscroll-control {
-        background: white;
-        border-radius: 8px;
-        padding: 14px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        background: var(--sys-bg3);
+        border-radius: 12px;
+        padding: 12px 14px;
       }
       .toggle-container {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        margin-bottom: 10px;
       }
       .toggle-label {
         font-size: 14px;
         font-weight: 600;
-        color: #333;
+        color: var(--sys-label);
       }
       .toggle-switch {
         position: relative;
-        width: 50px;
-        height: 26px;
-        background: #ccc;
-        border-radius: 13px;
+        width: 51px;
+        height: 31px;
+        background: var(--sys-fill);
+        border-radius: 100px;
         cursor: pointer;
-        transition: background 0.3s;
+        flex-shrink: 0;
+        transition: background 0.2s;
       }
       .toggle-switch.active {
-        background: #2e7d32;
+        background: var(--sys-green);
       }
       .toggle-switch::after {
         content: '';
         position: absolute;
-        width: 22px;
-        height: 22px;
-        background: white;
+        width: 27px;
+        height: 27px;
+        background: #fff;
         border-radius: 50%;
         top: 2px;
         left: 2px;
-        transition: transform 0.3s;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+        transition: transform 0.2s;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.25);
       }
       .toggle-switch.active::after {
-        transform: translateX(24px);
+        transform: translateX(20px);
       }
       .speed-preset {
-        font-size: 11px;
-        color: #666;
+        font-size: 12px;
+        color: var(--sys-label2);
+        margin-top: 1px;
       }
       .recent-matches {
-        background: white;
-        border-radius: 8px;
-        padding: 12px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        background: var(--sys-bg2);
+        border-radius: var(--r-card);
+        box-shadow: var(--shadow-card);
+        overflow: hidden;
       }
       .match-card {
-        padding: 10px;
-        border-bottom: 1px solid #eee;
+        padding: 11px 14px;
+        border-bottom: 1px solid var(--sys-sep);
         cursor: pointer;
         transition: background 0.2s;
       }
       .match-card:hover {
-        background: #f9f9fb;
+        background: var(--sys-fill2);
       }
       .match-card:last-child {
         border-bottom: none;
@@ -170,41 +254,44 @@
       .match-card-header {
         display: flex;
         align-items: center;
-        gap: 8px;
-        margin-bottom: 6px;
+        gap: 7px;
+        margin-bottom: 5px;
       }
       .match-badge {
-        font-size: 10px;
-        padding: 3px 8px;
-        border-radius: 10px;
+        display: inline-flex;
+        align-items: center;
+        font-size: 11px;
+        padding: 3px 9px;
+        border-radius: var(--r-pill);
         font-weight: 600;
+        letter-spacing: 0.01em;
         white-space: nowrap;
       }
       .match-badge-hiring {
-        background: #ff5722;
-        color: white;
+        background: var(--sys-red-bg);
+        color: var(--sys-red);
       }
       .match-badge-devops {
-        background: #1565c0;
-        color: white;
+        background: var(--sys-blue-bg);
+        color: var(--sys-blue);
       }
       .match-author {
-        font-size: 11px;
+        font-size: 12px;
         font-weight: 600;
-        color: #333;
+        color: var(--sys-label);
         flex: 1;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
       .match-time {
-        font-size: 10px;
-        color: #999;
+        font-size: 11px;
+        color: var(--sys-label3);
       }
       .match-snippet {
-        font-size: 11px;
-        color: #666;
-        line-height: 1.4;
+        font-size: 12px;
+        color: var(--sys-label2);
+        line-height: 1.45;
         overflow: hidden;
         text-overflow: ellipsis;
         display: -webkit-box;
@@ -218,99 +305,110 @@
         margin-top: 6px;
       }
       .keyword-pill {
-        font-size: 9px;
-        padding: 2px 6px;
-        border-radius: 8px;
-        background: #e3f2fd;
-        color: #1565c0;
+        font-size: 10px;
+        padding: 2px 7px;
+        border-radius: 6px;
+        background: var(--sys-blue-bg);
+        color: var(--sys-blue);
         font-weight: 600;
       }
       .empty-state {
         text-align: center;
         padding: 20px;
-        color: #999;
+        color: var(--sys-label3);
         font-size: 12px;
-        font-style: italic;
       }
       .actions {
         display: grid;
         grid-template-columns: 1fr 1fr;
         gap: 8px;
-        margin-bottom: 12px;
       }
       .btn {
-        padding: 10px 14px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 9px 16px;
         border: none;
-        border-radius: 6px;
-        font-size: 12px;
+        border-radius: var(--r-btn);
+        font-size: 13px;
         font-weight: 600;
         cursor: pointer;
         text-decoration: none;
         text-align: center;
-        display: block;
-        transition: all 0.2s;
+        font-family: var(--font);
+        transition: opacity 0.15s;
+      }
+      .btn:hover {
+        opacity: 0.85;
       }
       .btn-primary {
-        background: #1565c0;
-        color: white;
-      }
-      .btn-primary:hover {
-        background: #1976d2;
+        background: var(--sys-blue);
+        color: #fff;
       }
       .btn-secondary {
-        background: white;
-        color: #333;
-        border: 1px solid #ddd;
-      }
-      .btn-secondary:hover {
-        background: #f9f9fb;
+        background: var(--sys-fill);
+        color: var(--sys-label);
       }
       .btn-danger {
-        background: #d32f2f;
-        color: white;
-      }
-      .btn-danger:hover {
-        background: #e53935;
+        background: var(--sys-red);
+        color: #fff;
       }
       .btn-full {
         grid-column: 1 / -1;
       }
       .footer {
-        padding: 0 18px 16px;
-        font-size: 10px;
-        color: #999;
+        padding: 8px 16px 12px;
+        font-size: 11px;
+        color: var(--sys-label3);
         text-align: center;
       }
       .shortcut-hint {
-        background: #fff3e0;
-        border: 1px solid #ffe0b2;
-        border-radius: 6px;
-        padding: 8px 10px;
-        font-size: 11px;
-        color: #e65100;
+        background: var(--sys-orange-bg);
+        border-radius: 10px;
+        padding: 9px 12px;
+        font-size: 12px;
+        color: var(--sys-orange);
+        font-weight: 500;
         margin-bottom: 12px;
-        text-align: center;
+        display: flex;
+        align-items: center;
+        gap: 8px;
       }
       code {
-        background: #ffecb3;
-        padding: 2px 4px;
-        border-radius: 3px;
+        background: rgba(255,149,0,0.15);
+        border: 1px solid rgba(255,149,0,0.3);
+        color: var(--sys-orange);
+        padding: 2px 7px;
+        border-radius: 6px;
+        font-size: 11px;
+        font-weight: 700;
+        font-family: monospace;
+        letter-spacing: 0.03em;
+      }
+      .last-match-keywords {
         font-size: 10px;
-        font-weight: 600;
+        color: var(--sys-label3);
+        text-align: center;
+        margin: -8px 0 8px;
+        min-height: 14px;
       }
       .server-dot {
-        width: 8px;
-        height: 8px;
+        width: 6px;
+        height: 6px;
         border-radius: 50%;
-        background: #9e9e9e;
+        background: var(--sys-label3);
         flex-shrink: 0;
         transition: background 0.3s;
       }
-      .server-dot.online  { background: #69f0ae; }
-      .server-dot.offline { background: #ef9a9a; }
+      .server-dot.online  { background: var(--sys-green); }
+      .server-dot.offline { background: var(--sys-red); }
       .server-label {
         font-size: 11px;
-        opacity: 0.85;
+        color: var(--sys-label2);
+      }
+      .notion-status {
+        font-size: 12px;
+        margin-top: 4px;
       }
       .notion-error-tooltip {
         display: none;
@@ -318,16 +416,16 @@
         left: 0;
         top: 100%;
         margin-top: 4px;
-        background: #212121;
+        background: #1C1C1E;
         color: #fff;
         font-size: 11px;
         padding: 6px 10px;
-        border-radius: 6px;
+        border-radius: 8px;
         white-space: pre-wrap;
         word-break: break-all;
         max-width: 280px;
         z-index: 999;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        box-shadow: 0 8px 40px rgba(0,0,0,0.14), 0 2px 8px rgba(0,0,0,0.08);
         line-height: 1.5;
       }
       .notion-error-trigger:hover .notion-error-tooltip {
@@ -337,14 +435,19 @@
   </head>
   <body>
     <div class="header">
-      <h1>🔍 LinkedIn DevOps Scanner</h1>
-      <div class="status-bar">
-        <div class="status-indicator idle" id="status-indicator"></div>
-        <span id="status-text">Idle</span>
-        <span id="server-status-wrap" style="display:none;margin-left:auto;align-items:center;gap:5px;">
-          <div class="server-dot" id="server-dot"></div>
-          <span class="server-label" id="server-label">Server</span>
-        </span>
+      <div class="header-row">
+        <img src="icons/icon128.png" class="header-icon" alt="" />
+        <div style="flex:1;">
+          <h1>DevOps Scanner</h1>
+          <div class="status-bar">
+            <div class="status-indicator idle" id="status-indicator"></div>
+            <span id="status-text">Idle</span>
+            <span id="server-status-wrap" style="display:none;margin-left:auto;align-items:center;gap:5px;">
+              <div class="server-dot" id="server-dot"></div>
+              <span class="server-label" id="server-label">Server</span>
+            </span>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -364,33 +467,35 @@
           <div class="stat__lbl">Saved</div>
         </div>
       </div>
-      <div id="last-match-keywords" style="font-size:10px;color:#757575;text-align:center;margin-top:2px;min-height:14px;"></div>
+      <div class="last-match-keywords" id="last-match-keywords"></div>
 
       <!-- AI Analysis Progress -->
-      <div id="ai-progress-section" style="display:none;margin:8px 0 4px;padding:0 2px;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-          <span style="font-size:11px;font-weight:600;color:#555;">🤖 AI Scanned</span>
-          <span id="ai-progress-label" style="font-size:11px;color:#555;">0 / 0</span>
+      <div class="ai-progress" id="ai-progress-section" style="display:none;">
+        <div class="ai-progress__head">
+          <span class="ai-progress__title"><span style="font-size:13px;">✦</span> AI Analysis</span>
+          <span class="ai-progress__label" id="ai-progress-label">0 / 0</span>
         </div>
-        <div style="background:#eee;border-radius:4px;height:5px;overflow:hidden;">
-          <div id="ai-progress-bar" style="background:#6a1b9a;height:5px;width:0%;transition:width 0.4s;"></div>
+        <div class="ai-progress__track">
+          <div class="ai-progress__bar" id="ai-progress-bar"></div>
         </div>
       </div>
 
       <!-- Keyboard Shortcut Hint -->
       <div class="shortcut-hint">
-        💡 Quick toggle: <code>Ctrl+Shift+S</code>
+        <span style="font-size:13px;flex-shrink:0;">⌨️</span>
+        <span>Quick toggle:</span> <code>Ctrl+Shift+S</code>
       </div>
 
       <!-- Auto-Scroll Control -->
       <div class="section">
-        <div class="section-title">Auto-Scroll</div>
         <div class="autoscroll-control">
           <div class="toggle-container">
-            <span class="toggle-label">Auto-Scroll Mode</span>
+            <div>
+              <div class="toggle-label">Auto-scroll</div>
+              <div class="speed-preset" id="speed-preset">Speed: Balanced</div>
+            </div>
             <div class="toggle-switch" id="autoscroll-toggle"></div>
           </div>
-          <div class="speed-preset" id="speed-preset">Speed: Balanced</div>
         </div>
       </div>
 
@@ -404,24 +509,22 @@
 
       <!-- Notion Sync Status -->
       <div class="section" id="notion-sync-section" style="display:none;">
-        <div class="section-title">📓 Notion Sync</div>
-        <div id="notion-sync-status" style="font-size:12px;margin-top:4px;"></div>
-        <button class="btn btn-secondary" id="notion-test-sync" style="margin-top:6px;font-size:11px;padding:4px 10px;">Test Sync</button>
-        <button class="btn btn-secondary" id="notion-sync-unsynced" style="margin-top:6px;font-size:11px;padding:4px 10px;display:none;">Sync Unsynced</button>
+        <div class="section-title">Notion Sync</div>
+        <div class="notion-status" id="notion-sync-status"></div>
+        <button class="btn btn-secondary" id="notion-test-sync" style="margin-top:6px;font-size:12px;padding:6px 12px;">Test Sync</button>
+        <button class="btn btn-secondary" id="notion-sync-unsynced" style="margin-top:6px;font-size:12px;padding:6px 12px;display:none;">Sync Unsynced</button>
       </div>
 
       <!-- Actions -->
       <div class="actions">
-        <a href="saved.html" target="_blank" class="btn btn-primary">📋 Saved Matches</a>
-        <a href="settings.html" target="_blank" class="btn btn-secondary">⚙️ Settings</a>
-        <button class="btn btn-danger btn-full" id="clear-matches">🗑️ Clear All Matches</button>
-        <a href="diagnostics.html" target="_blank" class="btn btn-secondary btn-full">🔧 Diagnostics</a>
+        <a href="saved.html" target="_blank" class="btn btn-primary">Saved Matches</a>
+        <a href="settings.html" target="_blank" class="btn btn-secondary">Settings</a>
+        <button class="btn btn-danger btn-full" id="clear-matches">Clear All Matches</button>
+        <a href="diagnostics.html" target="_blank" class="btn btn-secondary btn-full">Diagnostics</a>
       </div>
     </div>
 
-    <div class="footer">
-      v2.0.0 | Made with ❤️ for DevOps job hunters
-    </div>
+    <div class="footer">v2.1.0</div>
 
     <!-- Shared utilities -->
     <script src="shared/utils.js"></script>

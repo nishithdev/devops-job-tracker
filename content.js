@@ -58,11 +58,19 @@ try {
   // Regex cache to avoid recompiling patterns on every scan
   const regexCache = new Map();
   
+  // Boundary-safe matcher for ANY keyword — not just short ones. \b is only
+  // applied where the keyword edge is a word char (".net", "ci/cd" break
+  // otherwise), and internal spaces match any whitespace run (LinkedIn
+  // renders &nbsp; between words).
   function getCachedRegex(keyword, flags = 'i') {
     const cacheKey = `${keyword}:${flags}`;
     if (!regexCache.has(cacheKey)) {
-      const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      regexCache.set(cacheKey, new RegExp(`\\b${escaped}\\b`, flags));
+      const escaped = keyword
+        .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        .replace(/ +/g, '[\\s\\u00a0]+');
+      const lead  = /^[a-z0-9]/i.test(keyword) ? '\\b' : '';
+      const trail = /[a-z0-9]$/i.test(keyword) ? '\\b' : '';
+      regexCache.set(cacheKey, new RegExp(`${lead}${escaped}${trail}`, flags));
     }
     return regexCache.get(cacheKey);
   }
@@ -207,42 +215,16 @@ try {
     return (h >>> 0).toString(36);
   };
 
+  // Word-boundary matching for ALL keywords (via getCachedRegex), so
+  // "helm" doesn't match "overwhelm", "chef" doesn't match "chefs", etc.
+  // Needles are lowercased/trimmed so user-typed casing (SRE, AWS) works.
   function findAny(haystack, needles) {
-    return needles.find((n) => {
-      // Normalize needle to lowercase so it matches the lowercased haystack
-      // regardless of how the user typed the keyword (SRE, sre, Sre all work)
-      // Trim to handle keywords with accidental leading/trailing whitespace
-      const needle = n.toLowerCase().trim();
-      // Use word boundary matching for short keywords (3 chars or less)
-      // to avoid false positives:
-      //   "sre" should NOT match "insure", "ensure", "disrespect"
-      //   "aks" should NOT match "tasks", "breaks", "speaks"
-      //   "eks" should NOT match "weeks", "seeks", "cheeks"
-      //   "gke" should NOT match "gke" within other words
-      if (needle.length <= 3 && /^[a-z0-9]+$/.test(needle)) {
-        // Use cached regex with word boundaries: \bsre\b
-        const regex = getCachedRegex(needle, 'i');
-        return regex.test(haystack);
-      }
-      // For longer keywords and phrases, use simple substring match
-      // Note: EXCLUDE_KEYWORDS are intentionally specific phrases (e.g., "online course"
-      // instead of just "course") to avoid false positives like "Concourse" (CI/CD tool)
-      return haystack.includes(needle);
-    });
+    return needles.find((n) => getCachedRegex(n.toLowerCase().trim(), 'i').test(haystack));
   }
 
   function findAll(haystack, needles) {
     // Returns ALL matching keywords (not just the first one)
-    return needles.filter((n) => {
-      // Normalize needle to lowercase so uppercase custom keywords (SRE, AWS) match correctly
-      // Trim to handle keywords with accidental leading/trailing whitespace
-      const needle = n.toLowerCase().trim();
-      if (needle.length <= 3 && /^[a-z0-9]+$/.test(needle)) {
-        const regex = getCachedRegex(needle, 'i');
-        return regex.test(haystack);
-      }
-      return haystack.includes(needle);
-    });
+    return needles.filter((n) => getCachedRegex(n.toLowerCase().trim(), 'i').test(haystack));
   }
 
   // ---- Classifier V2 — contextual, sentence-level, negation-aware ----------
@@ -257,6 +239,18 @@ try {
     'release engineer', 'cloud devops', 'cloud ops', 'aws engineer',
     'azure engineer', 'gcp engineer', 'cloud support engineer',
   ]);
+
+  // Generic terms (clouds, languages, broad infra words) that are never
+  // sufficient evidence alone — see DEFAULT_WEAK_KEYWORDS in keywordConfig.js.
+  const V2_WEAK_KEYWORDS = new Set(DEFAULT_WEAK_KEYWORDS.map(k => k.toLowerCase()));
+
+  // Two-stage thresholds: >= AUTO_MATCH matches on keywords alone; the
+  // [GRAY_MIN, AUTO_MATCH) band is confirmed by AI before saving; below
+  // GRAY_MIN drops. LEGACY is the old single threshold, used as fallback
+  // when AI is unreachable.
+  const V2_AUTO_MATCH = 55;
+  const V2_GRAY_MIN   = 25;
+  const V2_LEGACY_MATCH = 40;
 
   const V2_NEGATION_WORDS = [
     'no ', 'not ', "don't ", "doesn't ", "won't ", 'never ', 'without ',
@@ -316,13 +310,22 @@ try {
   function classifyV2(text, postEl) {
     if (!text || text.trim().length < 20) return { match: false };
 
-    const t = text.toLowerCase();
+    // NFKC fold so LinkedIn's styled unicode (𝗪𝗲'𝗿𝗲 𝗵𝗶𝗿𝗶𝗻𝗴) matches keywords
+    const t = foldText(text);
     const sentences = v2SplitSentences(t);
 
     let score = 0;
     const devopsHits = [];
     const hiringHits = [];
     const v2signals = [];
+    // Numeric feature vector logged with every decision — the training input
+    // for scripts/analyze-decisions.js. Keep keys in sync with that script.
+    const features = {
+      ctxHiring: 0, ctxRequirements: 0, ctxNeutral: 0, ctxCompany: 0,
+      roleHits: 0, negated: 0, hiringSignals: 0,
+      yearsExp: 0, salary: 0, email: 0, applyInstr: 0, bullets: 0, remote: 0,
+      invalid: 0,
+    };
 
     for (const sentence of sentences) {
       const context = v2GetContext(sentence);
@@ -330,17 +333,14 @@ try {
       // --- DevOps keyword hits ---
       let sentenceDevopsHit = false;
       for (const keyword of DEVOPS_KEYWORDS) {
-        const needle = keyword.toLowerCase();
-        const pos = sentence.indexOf(needle);
-        if (pos === -1) continue;
-
-        // Word boundary check for short keywords (≤3 chars)
-        if (needle.length <= 3 && /^[a-z0-9]+$/.test(needle)) {
-          if (!getCachedRegex(needle, 'i').test(sentence)) continue;
-        }
+        const needle = keyword.toLowerCase().trim();
+        const m = getCachedRegex(needle, 'i').exec(sentence);
+        if (!m) continue;
+        const pos = m.index;
 
         if (v2IsNegated(sentence, pos)) {
           score -= 3;
+          features.negated++;
           v2signals.push(`negated "${keyword}" (-3)`);
           continue;
         }
@@ -349,9 +349,12 @@ try {
 
         if (!sentenceDevopsHit) {
           // Only score once per sentence to avoid keyword-stuffing inflation
-          const roleBonus = V2_ROLE_KEYWORDS.has(needle) ? 14 : 0;
+          const isRole = V2_ROLE_KEYWORDS.has(needle);
+          const roleBonus = isRole ? 14 : 0;
           const pts = V2_CONTEXT_SCORE[context] + roleBonus;
           score += pts;
+          if (isRole) features.roleHits++;
+          features['ctx' + context.charAt(0).toUpperCase() + context.slice(1)]++;
           v2signals.push(`"${keyword}" [${context}]${roleBonus ? ' +role' : ''} +${pts}`);
           sentenceDevopsHit = true;
         }
@@ -359,55 +362,68 @@ try {
 
       // --- Hiring signal hits ---
       for (const signal of HIRING_SIGNALS) {
-        const needle = signal.toLowerCase();
-        const pos = sentence.indexOf(needle);
-        if (pos === -1) continue;
-        if (v2IsNegated(sentence, pos)) continue;
+        const needle = signal.toLowerCase().trim();
+        const m = getCachedRegex(needle, 'i').exec(sentence);
+        if (!m) continue;
+        if (v2IsNegated(sentence, m.index)) continue;
         if (!hiringHits.includes(signal)) {
           hiringHits.push(signal);
           score += 7;
+          features.hiringSignals++;
           v2signals.push(`hiring signal "${signal}" +7`);
         }
         break;
       }
     }
 
-    // --- Structural signals (full text, not per-sentence) ---
-    if (/\b\d+\+?\s*(?:years?|yrs?)(?:\s+of)?\s+(?:experience|exp)\b/i.test(text)) {
-      score += 10; v2signals.push('years-of-exp pattern +10');
+    // --- Structural signals (full folded text, not per-sentence) ---
+    if (/\b\d+\+?\s*(?:years?|yrs?)(?:\s+of)?\s+(?:experience|exp)\b/i.test(t)) {
+      score += 10; features.yearsExp = 1; v2signals.push('years-of-exp pattern +10');
     }
-    if (/(?:\$\d+|\d+k)\s*(?:\/\s*(?:hr|hour|yr|year|annum))?/i.test(text)) {
-      score += 8; v2signals.push('salary/rate +8');
+    if (/(?:\$\d+|\d+k)\s*(?:\/\s*(?:hr|hour|yr|year|annum))?/i.test(t)) {
+      score += 8; features.salary = 1; v2signals.push('salary/rate +8');
     }
     const bodyOnlyText = postEl ? getPostBodyOnly(postEl) : text;
     if (/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/.test(bodyOnlyText)) {
-      score += 12; v2signals.push('email present +12');
+      score += 12; features.email = 1; v2signals.push('email present +12');
     }
-    if (/\b(apply|dm me|message me|send (?:your )?(?:resume|cv)|drop (?:your )?(?:resume|cv))\b/i.test(text)) {
-      score += 12; v2signals.push('apply instruction +12');
+    if (/\b(apply|dm me|message me|send (?:your )?(?:resume|cv)|drop (?:your )?(?:resume|cv))\b/i.test(t)) {
+      score += 12; features.applyInstr = 1; v2signals.push('apply instruction +12');
     }
-    const bulletCount = (text.match(/^[\s]*[•·\-\*]\s+.+/gm) || []).length;
+    const bulletCount = (t.match(/^[\s]*[•·\-\*]\s+.+/gm) || []).length;
     if (bulletCount >= 3) {
-      score += 8; v2signals.push(`structured bullets (${bulletCount}) +8`);
+      score += 8; features.bullets = bulletCount; v2signals.push(`structured bullets (${bulletCount}) +8`);
     }
-    if (/\b(remote|wfh|work from home|fully remote|hybrid)\b/i.test(text)) {
-      score += 4; v2signals.push('remote/hybrid +4');
+    if (/\b(remote|wfh|work from home|fully remote|hybrid)\b/i.test(t)) {
+      score += 4; features.remote = 1; v2signals.push('remote/hybrid +4');
     }
 
-    // --- Invalid keyword penalty (soft — doesn't hard-block) ---
+    // --- Invalid keyword — hard block: post never matches, never goes to AI ---
     const invalidHit = findAny(t, INVALID_KEYWORDS);
     if (invalidHit) {
-      score -= 25; v2signals.push(`invalid keyword "${invalidHit}" -25`);
+      score -= 25; features.invalid = 1; v2signals.push(`invalid keyword "${invalidHit}" — hard block`);
     }
 
     const confidence = Math.max(0, Math.min(100, score));
-    // Require at least one devops keyword + confidence threshold
-    const match = devopsHits.length > 0 && confidence >= 40;
 
-    dbg('[V2]', match ? 'MATCH' : 'SKIP', `confidence=${confidence}`, v2signals.join(' | '));
+    // Evidence gate: generic terms (aws, python, linux…) never match alone —
+    // need a role keyword or two non-weak keywords.
+    const roleHit = devopsHits.some(k => V2_ROLE_KEYWORDS.has(k.toLowerCase().trim()));
+    const nonWeakCount = devopsHits.filter(k => !V2_WEAK_KEYWORDS.has(k.toLowerCase().trim())).length;
+    const evidenceOk = roleHit || nonWeakCount >= 2;
+    if (devopsHits.length > 0 && !evidenceOk) {
+      v2signals.push('evidence gate: weak keywords only');
+    }
+
+    const match = !invalidHit && devopsHits.length > 0 && evidenceOk && confidence >= V2_AUTO_MATCH;
+    // Gray zone — enough keyword evidence but mid confidence: AI decides
+    const grayZone = !match && !invalidHit && devopsHits.length > 0 && evidenceOk && confidence >= V2_GRAY_MIN;
+
+    dbg('[V2]', match ? 'MATCH' : grayZone ? 'GRAY' : 'SKIP', `confidence=${confidence}`, v2signals.join(' | '));
 
     return {
       match,
+      grayZone,
       confidence,
       devopsHits,
       hiringHit: hiringHits[0] || null,
@@ -415,6 +431,7 @@ try {
       invalidHit: invalidHit || null,
       skills: devopsHits,
       v2signals,
+      features,
     };
   }
 
@@ -454,14 +471,109 @@ try {
     }
   }
 
+  // ---- Decision log (classifier feedback loop) ------------------------------
+  // Every classified post — match, gray, or skip — is logged with its feature
+  // vector so weights can be fit against real outcomes. Labels come from user
+  // actions (Open clicks here, status changes in background.js). Export via
+  // diagnostics page; analyze with scripts/analyze-decisions.js.
+  let decisionBuffer = [];
+  const MAX_DECISION_LOG = 2000;
+
+  function decisionEntry(postEl, text, info, outcome) {
+    return {
+      ts: Date.now(),
+      url: getPostUrl(postEl) || null,
+      textHash: hashText(text),
+      outcome, // match | skip | gray_ai_match | gray_ai_skip | gray_ai_error_match | gray_ai_error_skip
+      confidence: info.confidence ?? 0,
+      features: info.features || {},
+      devopsHits: info.devopsHits || [],
+      hiringHits: info.hiringHits || [],
+      invalidHit: info.invalidHit || null,
+      aiVerdict: info.aiVerdict || null,
+      snippet: text.substring(0, 120),
+    };
+  }
+
+  function logDecision(entry) {
+    decisionBuffer.push(entry);
+    if (decisionBuffer.length >= 20) flushDecisions();
+  }
+
+  function flushDecisions() {
+    if (!decisionBuffer.length) return;
+    const pending = decisionBuffer;
+    decisionBuffer = [];
+    try {
+      if (!chrome.storage || !chrome.storage.local) return;
+      chrome.storage.local.get(['devopsDecisionLog'], (res) => {
+        if (chrome.runtime.lastError) return;
+        let log = (res.devopsDecisionLog || []).concat(pending);
+        if (log.length > MAX_DECISION_LOG) log = log.slice(log.length - MAX_DECISION_LOG);
+        chrome.storage.local.set({ devopsDecisionLog: log });
+      });
+    } catch (e) {
+      dbg('flushDecisions error:', e.message);
+    }
+  }
+
+  function logLabel(event) {
+    try {
+      if (!chrome.storage || !chrome.storage.local) return;
+      chrome.storage.local.get(['devopsLabelLog'], (res) => {
+        if (chrome.runtime.lastError) return;
+        let log = res.devopsLabelLog || [];
+        log.push({ ts: Date.now(), ...event });
+        if (log.length > MAX_DECISION_LOG) log = log.slice(log.length - MAX_DECISION_LOG);
+        chrome.storage.local.set({ devopsLabelLog: log });
+      });
+    } catch (_) {}
+  }
+
+  // ---- Gray-zone resolution --------------------------------------------------
+  // Mid-confidence posts get an AI verdict before decorating/saving. The AI
+  // response is hash-cached (server) so the later enrichment pass is free.
+  function resolveGrayZone(postEl, text, info) {
+    postEl.setAttribute(MARK_ATTR, 'ai-pending');
+    updateAIQueue(+1);
+    chrome.runtime.sendMessage({ action: 'analyzeWithAI', text }, (aiResp) => {
+      updateAIQueue(-1);
+      if (!postEl.isConnected || postEl.getAttribute(MARK_ATTR) === 'match') return;
+      postEl.removeAttribute(MARK_ATTR);
+      let outcome;
+      if (chrome.runtime.lastError || !aiResp?.success) {
+        // AI unreachable — fall back to the old single-threshold rule
+        info.aiVerified = info.confidence >= V2_LEGACY_MATCH;
+        outcome = info.aiVerified ? 'gray_ai_error_match' : 'gray_ai_error_skip';
+      } else {
+        const a = aiResp.analysis || {};
+        // Older cached analyses lack isJobPosting — fall back to jobTitles presence
+        const isJob = a.isJobPosting === true ||
+          (a.isJobPosting == null && Array.isArray(a.jobTitles) && a.jobTitles.length > 0);
+        info.aiVerified = isJob && (a.confidence == null || a.confidence >= 50);
+        info.aiVerdict = { isJobPosting: a.isJobPosting ?? null, confidence: a.confidence ?? null };
+        outcome = info.aiVerified ? 'gray_ai_match' : 'gray_ai_skip';
+      }
+      if (info.aiVerified) {
+        info.match = true;
+        dbg('gray-zone AI confirmed:', info.devopsHits.join(', '), `conf=${info.confidence}`);
+        trackKeywordHits(info.devopsHits, info.hiringHits, info.skills);
+        decorate(postEl, info, text);
+      } else {
+        markScanned(postEl, text.length);
+      }
+      logDecision(decisionEntry(postEl, text, info, outcome));
+    });
+  }
+
   // getPostText, getPostBodyOnly, getPostUrl defined in shared/postHelpers.js
 
   // Highlight styles per category — background only, no font changes
   const HIGHLIGHT_STYLES = {
-    devops:   { cls: 'devops-scan-highlight--devops',   css: 'background:#fff59d;border-radius:2px;' },
-    hiring:   { cls: 'devops-scan-highlight--hiring',   css: 'background:#c8e6c9;border-radius:2px;' },
-    skill:    { cls: 'devops-scan-highlight--skill',    css: 'background:#e3f2fd;border-radius:2px;' },
-    invalid:  { cls: 'devops-scan-highlight--invalid',  css: 'background:#ffcdd2;border-radius:2px;' },
+    devops:   { cls: 'devops-scan-highlight--devops',   css: 'background:#c8e6c9;border-radius:3px;' },
+    hiring:   { cls: 'devops-scan-highlight--hiring',   css: 'background:#c8e6c9;border-radius:3px;' },
+    skill:    { cls: 'devops-scan-highlight--skill',    css: 'background:rgba(90,200,250,0.25);border-radius:3px;' },
+    invalid:  { cls: 'devops-scan-highlight--invalid',  css: 'background:rgba(255,149,0,0.2);border-radius:3px;' },
   };
 
   function highlightKeywords(postEl, info) {
@@ -571,9 +683,12 @@ try {
     if (info.invalidHit) {
       badge.textContent = `⚠️ Not valid · ${info.invalidHit}`;
       badge.classList.add("devops-scan-badge--invalid");
-    } else {
-      // Must have hiring signal to reach decorate() function
+    } else if (info.hiringHit) {
       badge.textContent = `🔥 Hiring · ${keywordList} + ${info.hiringHit}`;
+      badge.classList.add("devops-scan-badge--hiring");
+    } else {
+      // High-confidence or AI-verified match without an explicit hiring phrase
+      badge.textContent = `${info.aiVerified ? '🤖' : '🔥'} DevOps · ${keywordList}`;
       badge.classList.add("devops-scan-badge--hiring");
     }
     bar.appendChild(badge);
@@ -630,6 +745,7 @@ try {
       btn.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
+        logLabel({ url, action: 'opened' });
         window.open(url, "_blank", "noopener,noreferrer");
       });
       bar.appendChild(btn);
@@ -720,16 +836,57 @@ try {
     chrome.storage.local.get(['devopsSavedMatches'], (result) => {
       if (chrome.runtime.lastError) return;
       const match = (result.devopsSavedMatches || []).find(m => m.url === url);
-      if (match?.notionPageId) setNotionLink(postEl, match.notionPageId);
+      if (match?.notionPageId) {
+        setNotionLink(postEl, match.notionPageId);
+        addReprocessButton(postEl, match);
+      }
     });
+  }
+
+  // "↻ AI" button on saved posts — re-runs AI (bypassing caches) and PATCHes
+  // Notion, filling fields that are missing (or fully replacing a bad analysis).
+  function addReprocessButton(postEl, match) {
+    const bar = postEl.querySelector('.devops-scan-bar');
+    if (!bar || bar.querySelector('.devops-scan-reprocess-btn')) return;
+    const btn = document.createElement('button');
+    btn.className = 'devops-scan-reprocess-btn';
+    btn.type = 'button';
+    btn.textContent = '↻ AI';
+    btn.title = 'Re-run AI analysis and fill missing Notion fields';
+    btn.style.cssText = 'font-size:10px;color:#7c3aed;background:#ede9fe;border:none;border-radius:4px;padding:2px 6px;margin-left:4px;cursor:pointer;';
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (btn.disabled) return;
+      btn.disabled = true;
+      btn.textContent = '⏳';
+      const text = match.fullText || getPostBodyOnly(postEl);
+      // Fields present already survive; only missing ones get merged in.
+      // No analysis / errored analysis → missingFields null → full replace.
+      const missingFields = _getMissingAIFields(match);
+      _runAIAndSync({
+        matchId: match.id, text, match, postEl, useQueue: true,
+        missingFields, force: true,
+        onDone: (matchWithAI, syncResp) => {
+          btn.disabled = false;
+          const ok = matchWithAI && !syncResp?.error;
+          btn.textContent = ok ? '✓' : '✗';
+          btn.title = ok ? 'Re-processed and synced to Notion' : 'Re-process failed — check Ollama/Notion';
+          setTimeout(() => { btn.textContent = '↻ AI'; }, 4000);
+        },
+      });
+    });
+    const notion = bar.querySelector('.devops-scan-notion-link');
+    if (notion) notion.after(btn);
+    else bar.appendChild(btn);
   }
 
   // Shared helper: analyzeWithAI → storeAIAnalysis → syncMatchToNotion.
   // missingFields: string[] → merge-only update; null/undefined → full replace.
   // onDone(matchWithAI, syncResp) on success; onDone(null) on error.
-  function _runAIAndSync({ matchId, text, match, postEl, useQueue = false, missingFields, onDone } = {}) {
+  function _runAIAndSync({ matchId, text, match, postEl, useQueue = false, missingFields, force = false, onDone } = {}) {
     if (useQueue) updateAIQueue(+1);
-    chrome.runtime.sendMessage({ action: 'analyzeWithAI', text, matchId }, (aiResp) => {
+    chrome.runtime.sendMessage({ action: 'analyzeWithAI', text, matchId, force }, (aiResp) => {
       if (useQueue) updateAIQueue(-1);
       if (chrome.runtime.lastError || !aiResp?.success) {
         if (!missingFields) {
@@ -897,10 +1054,10 @@ try {
     
     // Update last match info for ALL valid matches (hiring + DevOps)
     lastMatchInfo = info;
-    
-    // Only count posts that passed classification (V2: confidence >= 40 with devops keyword)
-    if (!info.hiringHit && !(info.confidence >= 40)) {
-      dbg('SKIP counting: not a hiring post and low V2 confidence');
+
+    // Only count posts that passed classification (auto-match or AI-verified gray zone)
+    if (!info.match && !info.aiVerified) {
+      dbg('SKIP counting: did not pass classification');
       updateIndicator();
       return;
     }
@@ -921,9 +1078,9 @@ try {
       return;
     }
     
-    // Only save posts that passed classification (V2: confidence >= 40 with devops keyword)
-    if (!info.hiringHit && !(info.confidence >= 40)) {
-      dbg('SKIP saving: not a hiring post and low V2 confidence');
+    // Only save posts that passed classification (auto-match or AI-verified gray zone)
+    if (!info.match && !info.aiVerified) {
+      dbg('SKIP saving: did not pass classification');
       return;
     }
     
@@ -1055,6 +1212,7 @@ try {
               // Cache notionPageId locally — avoids storage re-read before Step 3
               match.notionPageId = syncResp.notionPageId;
               setNotionLink(postEl, syncResp.notionPageId);
+              addReprocessButton(postEl, match);
             }
 
             // Step 2 — run AI analysis in the background, then PATCH Notion (Step 3)
@@ -1906,7 +2064,10 @@ try {
     roots.forEach((postEl) => {
       const state = postEl.getAttribute(MARK_ATTR);
       if (state === "match") return; // already a match, leave it alone
-      const text = getPostText(postEl);
+      if (state === "ai-pending") return; // gray-zone AI verdict in flight
+      // Author's body text only — full-card text pulls in comments and
+      // reposted content, causing matches attributed to the wrong post.
+      const text = getPostBodyOnly(postEl);
       if (!text || text.length < 20) {
         skippedShort++;
         if (skippedShort <= 2) {
@@ -1933,8 +2094,16 @@ try {
         dbg("match:", info.devopsHits.join(', '), info.hiringHit ? `+ ${info.hiringHit}` : "");
         trackKeywordHits(info.devopsHits, info.hiringHits, info.skills);
         decorate(postEl, info, text);
+        logDecision(decisionEntry(postEl, text, info, 'match'));
+      } else if (info.grayZone) {
+        resolveGrayZone(postEl, text, info);
       } else {
         markScanned(postEl, text.length);
+        // Only log skips that had some keyword evidence — pure noise posts
+        // (no hits at all) would drown the log
+        if (info.devopsHits && info.devopsHits.length) {
+          logDecision(decisionEntry(postEl, text, info, 'skip'));
+        }
       }
     });
     if (processed) dbg(`  processed ${processed} new posts this scan`);
@@ -1969,6 +2138,10 @@ try {
 
     // Flush keyword hit counts to storage every 30 seconds
     setInterval(flushKeywordHits, 30000);
+
+    // Flush classifier decision log every 30 seconds and on page hide
+    setInterval(flushDecisions, 30000);
+    window.addEventListener('pagehide', flushDecisions);
 
     // Refresh Notion/AI counts every 10 seconds
     setInterval(refreshStorageCounts, 10000);

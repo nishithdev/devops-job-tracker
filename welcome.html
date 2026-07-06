@@ -9,169 +9,213 @@
       margin: 0;
       padding: 0;
     }
+    :root {
+      --sys-bg:        #F2F2F7;
+      --sys-bg2:       #FFFFFF;
+      --sys-bg3:       #F2F2F7;
+      --sys-fill:      rgba(120,120,128,0.12);
+      --sys-sep:       rgba(60,60,67,0.12);
+      --sys-label:     #000000;
+      --sys-label2:    rgba(60,60,67,0.6);
+      --sys-label3:    rgba(60,60,67,0.3);
+      --sys-blue:      #007AFF;
+      --sys-blue-bg:   rgba(0,122,255,0.10);
+      --sys-green-bg:  rgba(52,199,89,0.10);
+      --sys-purple-bg: rgba(175,82,222,0.10);
+      --sys-orange-bg: rgba(255,149,0,0.10);
+      --sys-teal:      #5AC8FA;
+      --shadow-pop:    0 8px 40px rgba(0,0,0,0.14), 0 2px 8px rgba(0,0,0,0.08);
+      --font: 'General Sans', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif;
+    }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      font-family: var(--font);
+      background: var(--sys-bg);
       min-height: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
       padding: 20px;
+      color: var(--sys-label);
     }
     .welcome-container {
-      max-width: 700px;
-      background: white;
-      border-radius: 16px;
-      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+      width: 100%;
+      max-width: 640px;
+      background: var(--sys-bg2);
+      border-radius: 20px;
+      box-shadow: var(--shadow-pop);
       overflow: hidden;
     }
     .progress-bar {
-      height: 6px;
-      background: #e0e0e0;
+      height: 3px;
+      background: var(--sys-fill);
     }
     .progress-fill {
       height: 100%;
-      background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+      background: var(--sys-blue);
+      border-radius: 100px;
       transition: width 0.3s ease;
     }
     .slide {
       display: none;
-      padding: 50px 60px;
+      padding: 40px 48px;
       min-height: 500px;
     }
     .slide.active {
       display: block;
-      animation: fadeIn 0.5s;
+      animation: fadeUp 0.4s;
     }
-    @keyframes fadeIn {
-      from { opacity: 0; transform: translateY(20px); }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(8px); }
       to { opacity: 1; transform: translateY(0); }
     }
     .slide-header {
       text-align: center;
-      margin-bottom: 30px;
+      margin-bottom: 28px;
     }
     .slide-icon {
-      font-size: 64px;
-      margin-bottom: 20px;
+      width: 64px;
+      height: 64px;
+      background: linear-gradient(135deg, #007AFF, #5AC8FA);
+      border-radius: 18px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 32px;
+      margin-bottom: 16px;
+      box-shadow: 0 8px 24px rgba(0,122,255,0.3);
     }
     .slide-title {
-      font-size: 32px;
+      font-size: 24px;
       font-weight: 700;
-      color: #1d1d1f;
-      margin-bottom: 10px;
+      letter-spacing: -0.02em;
+      color: var(--sys-label);
+      margin-bottom: 8px;
     }
     .slide-subtitle {
-      font-size: 16px;
-      color: #666;
+      font-size: 14px;
+      color: var(--sys-label2);
       line-height: 1.6;
+      max-width: 420px;
+      margin: 0 auto;
     }
     .slide-content {
-      margin-bottom: 40px;
+      margin-bottom: 28px;
     }
     .feature-list {
       list-style: none;
-      margin: 20px 0;
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+      margin: 16px 0;
     }
     .feature-item {
       display: flex;
-      align-items: start;
-      gap: 12px;
-      margin-bottom: 16px;
-      padding: 16px;
-      background: #f9f9fb;
-      border-radius: 8px;
-      border-left: 4px solid #667eea;
+      align-items: flex-start;
+      gap: 14px;
+      padding: 14px;
+      background: var(--sys-bg3);
+      border-radius: 12px;
     }
     .feature-icon {
-      font-size: 24px;
+      width: 36px;
+      height: 36px;
+      border-radius: 10px;
+      background: var(--sys-blue-bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
       flex-shrink: 0;
+      font-size: 18px;
     }
+    .feature-item:nth-child(2) .feature-icon { background: var(--sys-green-bg); }
+    .feature-item:nth-child(3) .feature-icon { background: var(--sys-purple-bg); }
+    .feature-item:nth-child(4) .feature-icon { background: var(--sys-orange-bg); }
     .feature-text {
       flex: 1;
     }
     .feature-title {
+      font-size: 13px;
       font-weight: 600;
-      margin-bottom: 4px;
-      color: #333;
+      margin-bottom: 2px;
+      color: var(--sys-label);
     }
     .feature-desc {
-      font-size: 14px;
-      color: #666;
+      font-size: 12px;
+      color: var(--sys-label2);
       line-height: 1.5;
     }
     .btn-container {
       display: flex;
-      gap: 12px;
+      gap: 10px;
       justify-content: space-between;
-      margin-top: 30px;
+      margin-top: 28px;
     }
     .btn {
-      padding: 14px 28px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 11px 20px;
       border: none;
-      border-radius: 8px;
-      font-size: 16px;
+      border-radius: 12px;
+      font-size: 14px;
       font-weight: 600;
+      font-family: var(--font);
       cursor: pointer;
-      transition: all 0.2s;
+      transition: opacity 0.15s;
+    }
+    .btn:hover {
+      opacity: 0.85;
     }
     .btn-secondary {
-      background: #e0e0e0;
-      color: #333;
-    }
-    .btn-secondary:hover {
-      background: #d0d0d0;
+      background: var(--sys-fill);
+      color: var(--sys-label);
     }
     .btn-primary {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      background: var(--sys-blue);
       color: white;
       flex: 1;
-    }
-    .btn-primary:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
     }
     .step-indicator {
       display: flex;
       justify-content: center;
-      gap: 8px;
-      margin-bottom: 30px;
+      gap: 7px;
+      margin-bottom: 28px;
     }
     .step-dot {
-      width: 10px;
-      height: 10px;
+      width: 7px;
+      height: 7px;
       border-radius: 50%;
-      background: #d0d0d0;
+      background: var(--sys-fill);
       transition: all 0.3s;
     }
     .step-dot.active {
-      width: 30px;
-      border-radius: 5px;
-      background: #667eea;
+      width: 24px;
+      border-radius: 100px;
+      background: var(--sys-blue);
     }
     .example-box {
-      background: #f0f7ff;
-      border: 2px solid #667eea;
-      border-radius: 8px;
-      padding: 20px;
-      margin: 20px 0;
+      background: var(--sys-blue-bg);
+      border-radius: 12px;
+      padding: 16px 18px;
+      margin: 16px 0;
     }
     .example-title {
+      font-size: 13px;
       font-weight: 600;
-      color: #667eea;
-      margin-bottom: 10px;
+      color: var(--sys-blue);
+      margin-bottom: 8px;
     }
     .example-text {
       font-size: 14px;
-      color: #555;
+      color: var(--sys-label);
       line-height: 1.6;
     }
     code {
-      background: #e8e8ea;
+      background: var(--sys-fill);
       padding: 2px 6px;
-      border-radius: 4px;
-      font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
-      font-size: 13px;
+      border-radius: 5px;
+      font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+      font-size: 12px;
     }
   </style>
 </head>
@@ -190,10 +234,10 @@
         <div class="step-dot"></div>
       </div>
       <div class="slide-header">
-        <div class="slide-icon">🚀</div>
-        <h1 class="slide-title">Welcome to LinkedIn DevOps Scanner!</h1>
+        <div class="slide-icon">🔍</div>
+        <h1 class="slide-title">Welcome to DevOps Scanner</h1>
         <p class="slide-subtitle">
-          Your personal AI assistant for finding DevOps job opportunities on LinkedIn
+          Your AI-powered assistant for finding DevOps opportunities on LinkedIn — hands-free.
         </p>
       </div>
       <div class="slide-content">
@@ -202,27 +246,27 @@
             <div class="feature-icon">🎯</div>
             <div class="feature-text">
               <div class="feature-title">Smart Detection</div>
-              <div class="feature-desc">Automatically scans LinkedIn posts for 40+ DevOps keywords and hiring signals</div>
+              <div class="feature-desc">Scans posts for 40+ DevOps keywords and hiring signals automatically.</div>
             </div>
           </li>
           <li class="feature-item">
             <div class="feature-icon">⚡</div>
             <div class="feature-text">
-              <div class="feature-title">Auto-Scroll Mode</div>
-              <div class="feature-desc">Let the extension scroll and collect matches while you relax</div>
+              <div class="feature-title">Auto-Scroll</div>
+              <div class="feature-desc">Set it and forget it — the extension scrolls your feed while you relax.</div>
             </div>
           </li>
           <li class="feature-item">
-            <div class="feature-icon">📊</div>
+            <div class="feature-icon">✦</div>
             <div class="feature-text">
-              <div class="feature-title">Advanced Filtering</div>
-              <div class="feature-desc">Filter by skills, exclude duplicates, and export your matches</div>
+              <div class="feature-title">Local AI Analysis</div>
+              <div class="feature-desc">Extracts job title, experience level, and VISA status via Ollama.</div>
             </div>
           </li>
         </ul>
       </div>
       <div class="btn-container">
-        <button class="btn btn-secondary" id="skip-btn">Skip Tutorial</button>
+        <button class="btn btn-secondary" id="skip-btn">Skip</button>
         <button class="btn btn-primary" id="next-btn-1">Get Started →</button>
       </div>
     </div>
@@ -249,7 +293,7 @@
             "We're <strong>hiring</strong> a Senior <strong>DevOps Engineer</strong> with <strong>Kubernetes</strong>, <strong>Terraform</strong>, and <strong>AWS</strong> experience!"
           </div>
         </div>
-        <p style="text-align:center; color:#666; margin:20px 0;">
+        <p style="text-align:center; color:var(--sys-label2); font-size:13px; margin:16px 0;">
           This post would be detected because it contains:
         </p>
         <ul class="feature-list">
@@ -317,7 +361,7 @@
             <div class="feature-icon">4️⃣</div>
             <div class="feature-text">
               <div class="feature-title">Manage Your Archive</div>
-              <div class="feature-desc">Click extension icon → "View Saved Matches" to filter and export</div>
+              <div class="feature-desc">Click extension icon → "Saved Matches" to filter and export</div>
             </div>
           </li>
         </ul>

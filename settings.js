@@ -107,11 +107,11 @@ function renderKeywords(settingKey, containerId, type) {
         <div class="keyword-tag ${type}${isDisabled ? ' keyword-tag--disabled' : ''}" style="${isDisabled ? 'opacity:0.45;text-decoration:line-through;' : ''}">
           ${escapeHtml(keyword)}${hitBadge}
           <button
-            onclick="toggleKeyword('${settingKey}', '${keyword.replace(/'/g, "\\'")}')"
+            data-action="toggle-keyword" data-setting="${settingKey}" data-keyword="${escapeHtml(keyword)}"
             title="${toggleTitle}"
             style="margin-left:4px;background:none;border:none;cursor:pointer;font-size:13px;line-height:1;padding:0 2px;color:inherit;opacity:0.75;"
           >${toggleIcon}</button>
-          <button onclick="removeKeyword('${settingKey}', ${index})" title="Remove" style="margin-left:2px;">×</button>
+          <button data-action="remove-keyword" data-setting="${settingKey}" data-index="${index}" title="Remove" style="margin-left:2px;">×</button>
         </div>
       `;
     })
@@ -148,6 +148,19 @@ window.removeKeyword = function(settingKey, index) {
   renderKeywords(settingKey, getContainerIdFromSetting(settingKey), getTypeFromSetting(settingKey));
   updateCounts();
 };
+
+// Inline onclick handlers are blocked by the MV3 extension-page CSP —
+// tag buttons dispatch through this delegated listener instead.
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-action="toggle-keyword"], [data-action="remove-keyword"]');
+  if (!btn) return;
+  const settingKey = btn.dataset.setting;
+  if (btn.dataset.action === 'toggle-keyword') {
+    window.toggleKeyword(settingKey, btn.dataset.keyword);
+  } else {
+    window.removeKeyword(settingKey, parseInt(btn.dataset.index, 10));
+  }
+});
 
 // Toggle a keyword enabled/disabled (does not remove it, just excludes it from scanning)
 window.toggleKeyword = function(settingKey, keyword) {

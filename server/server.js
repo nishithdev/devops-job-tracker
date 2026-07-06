@@ -205,6 +205,19 @@ db.all('SELECT hash, text, ollama_url, ollama_model FROM ai_queue ORDER BY creat
   drainAIQueue();
 }).catch(() => {});
 
+// Must stay identical to AI_SCHEMA in background.js — constrains Ollama
+// decoding to exactly these fields so small models can't emit malformed JSON.
+const AI_SCHEMA = {
+  type: 'object',
+  properties: {
+    isJobPosting:    { type: 'boolean' },
+    jobTitles:       { type: ['array', 'null'], items: { type: 'string' } },
+    visaSponsorship: { type: ['string', 'null'] },
+    confidence:      { type: 'integer', minimum: 0, maximum: 100 },
+  },
+  required: ['isJobPosting', 'jobTitles', 'visaSponsorship', 'confidence'],
+};
+
 const AI_PROMPT = (text) => [
   'You are a job post analyzer. Analyze the following LinkedIn post and extract structured information.',
   'Respond ONLY with a valid JSON object - no markdown, no explanation, no code fences.',
@@ -212,10 +225,12 @@ const AI_PROMPT = (text) => [
   text.substring(0, 1500),
   'JSON schema to fill:',
   '{',
+  '  "isJobPosting": true or false,',
   '  "jobTitles": ["role1", "role2"] or null,',
   '  "visaSponsorship": "short summary or null",',
   '  "confidence": 0-100',
   '}',
+  'For isJobPosting: true ONLY if the author is recruiting/hiring for a role. false for job seekers, courses, training, marketing, or general commentary.',
   'For jobTitles: Extract all distinct roles as an array. If none, return null.',
   'For visaSponsorship: Extract exactly what visa statuses are mentioned. If none, return null.',
 ].join('\n');
@@ -226,7 +241,7 @@ async function runOllama(text, baseUrl, model) {
     const r = await fetch(`${baseUrl}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, prompt: AI_PROMPT(text), stream: false, format: 'json' }),
+      body: JSON.stringify({ model, prompt: AI_PROMPT(text), stream: false, format: AI_SCHEMA }),
     });
     const rawText = await r.text();
     if (!r.ok) {
@@ -325,11 +340,18 @@ app.patch('/status', async (req, res) => {
 // POST /ai — shared Ollama analysis with hash-based dedup
 app.post('/ai', async (req, res) => {
   const {
-    text, hash,
+    text, hash, force,
     ollamaUrl   = 'http://localhost:11434',
     ollamaModel = 'qwen2.5:0.5b',
   } = req.body;
   if (!text || !hash) return res.status(400).json({ error: 'missing text or hash' });
+
+  // Force re-process: evict cached analysis so the job re-runs and the
+  // GET /ai/:hash poll can't return the stale result
+  if (force) {
+    aiCache.delete(hash);
+    db.run('DELETE FROM ai_cache WHERE text_hash = ?', [hash]).catch(() => {});
+  }
 
   if (aiCache.has(hash)) {
     const cached = aiCache.get(hash);

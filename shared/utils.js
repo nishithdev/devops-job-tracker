@@ -112,6 +112,20 @@ function normalizeText(s) {
 }
 
 /**
+ * Fold text for keyword matching: NFKC-normalize unicode (converts LinkedIn's
+ * styled bold/italic characters to plain ASCII), strip zero-width chars,
+ * and lowercase. Whitespace is preserved so sentence structure survives.
+ * @param {string} s
+ * @returns {string}
+ */
+function foldText(s) {
+  return (s || '')
+    .normalize('NFKC')
+    .replace(/[\u200b-\u200d\u2060\ufeff]+/g, '')
+    .toLowerCase();
+}
+
+/**
  * Check if extension context is still valid
  * @returns {boolean} True if context is valid
  */

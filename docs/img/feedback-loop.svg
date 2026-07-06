@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="240" viewBox="0 0 820 240" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif">
+  <defs>
+    <marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#78909c"/>
+    </marker>
+  </defs>
+
+  <text x="410" y="26" font-size="15" font-weight="700" fill="#263238" text-anchor="middle">Classifier feedback loop — weights come from your own behavior</text>
+
+  <!-- Boxes -->
+  <rect x="30" y="60" width="170" height="66" rx="8" fill="#e3f2fd" stroke="#64b5f6"/>
+  <text x="115" y="84" font-size="12" font-weight="600" fill="#0d47a1" text-anchor="middle">classifyV2 decisions</text>
+  <text x="115" y="100" font-size="10.5" fill="#1565c0" text-anchor="middle">score + feature vector</text>
+  <text x="115" y="114" font-size="10.5" fill="#1565c0" text-anchor="middle">devopsDecisionLog (2000 cap)</text>
+
+  <rect x="240" y="60" width="170" height="66" rx="8" fill="#e8f5e9" stroke="#a5d6a7"/>
+  <text x="325" y="84" font-size="12" font-weight="600" fill="#1b5e20" text-anchor="middle">Your actions = labels</text>
+  <text x="325" y="100" font-size="10.5" fill="#2e7d32" text-anchor="middle">Open ↗ clicks · status changes</text>
+  <text x="325" y="114" font-size="10.5" fill="#2e7d32" text-anchor="middle">devopsLabelLog</text>
+
+  <rect x="450" y="60" width="150" height="66" rx="8" fill="#fff3e0" stroke="#ffb74d"/>
+  <text x="525" y="84" font-size="12" font-weight="600" fill="#e65100" text-anchor="middle">Diagnostics page</text>
+  <text x="525" y="100" font-size="10.5" fill="#ef6c00" text-anchor="middle">Export button →</text>
+  <text x="525" y="114" font-size="10.5" fill="#ef6c00" text-anchor="middle">JSON with both logs</text>
+
+  <rect x="640" y="60" width="160" height="66" rx="8" fill="#f3e5f5" stroke="#ba68c8"/>
+  <text x="720" y="80" font-size="12" font-weight="600" fill="#4a148c" text-anchor="middle">analyze-decisions.js</text>
+  <text x="720" y="96" font-size="10.5" fill="#6a1b9a" text-anchor="middle">per-feature precision</text>
+  <text x="720" y="110" font-size="10.5" fill="#6a1b9a" text-anchor="middle">band calibration · fitted weights</text>
+
+  <!-- Arrows forward -->
+  <line x1="200" y1="93" x2="238" y2="93" stroke="#78909c" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="410" y1="93" x2="448" y2="93" stroke="#78909c" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="600" y1="93" x2="638" y2="93" stroke="#78909c" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- Loop back -->
+  <path d="M 720 126 L 720 176 L 115 176 L 115 128" fill="none" stroke="#43a047" stroke-width="1.5" marker-end="url(#a)" stroke-dasharray="5 4"/>
+  <text x="417" y="170" font-size="11.5" font-weight="600" fill="#2e7d32" text-anchor="middle">tune V2_CONTEXT_SCORE / thresholds in code from measured precision — every change becomes testable</text>
+
+  <text x="410" y="216" font-size="11" fill="#78909c" text-anchor="middle">node scripts/analyze-decisions.js devops-scanner-logs-*.json &#160;·&#160; needs ≥50 labeled posts for weight fitting</text>
+</svg>

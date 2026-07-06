@@ -4,6 +4,18 @@ A Chrome extension that scans your LinkedIn feed for DevOps job posts, scores th
 
 ---
 
+## UI at a Glance
+
+Every matched post gets a control bar injected above the post text, with keyword highlighting in the body:
+
+![Matched post with control bar](docs/img/match-bar.svg)
+
+All badge and pill states:
+
+![Badge reference](docs/img/badges.svg)
+
+---
+
 ## Data Flow
 
 ```mermaid
@@ -110,7 +122,8 @@ flowchart TD
 
 ### Scanning & Matching
 - Automatically scans LinkedIn feed posts as you scroll
-- Uses a two-pass classifier (V2) with sentence-level context, negation detection, and confidence scoring
+- Matches on the **author's post body only** — comments and reposted content can't trigger false matches
+- Uses a two-stage classifier (see [Matching Pipeline](#matching-pipeline)) with sentence-level context, negation detection, and confidence scoring
 - Highlights matched posts with a colored border and score pill
 - Shows a match counter on each post indicating how many keywords were hit
 - Dims posts you have already marked as Applied
@@ -119,6 +132,43 @@ flowchart TD
 Each matched post gets a score pill (green/yellow/red) based on confidence:
 - Considers DevOps keywords, hiring signals, and context
 - Hover over the pill to see which signals fired
+
+---
+
+## Matching Pipeline
+
+![Matching pipeline](docs/img/pipeline.svg)
+
+How a post becomes a match:
+
+1. **Text extraction** — only the author's body text is read (`getPostBodyOnly`); comments, social counts, and reposted content are excluded.
+2. **Unicode fold** — text is NFKC-normalized and lowercased, so LinkedIn's styled unicode (𝗪𝗲'𝗿𝗲 𝗵𝗶𝗿𝗶𝗻𝗴 𝗗𝗲𝘃𝗢𝗽𝘀) matches plain keywords. Zero-width characters are stripped.
+3. **Keyword matching** — every keyword uses word-boundary regexes (`helm` won't match "overwhelm", `chef` won't match "chefs"). Boundaries adapt to keywords with punctuation (`.net`, `ci/cd`, `node.js` still work), and internal spaces match LinkedIn's `&nbsp;`.
+4. **Sentence-level scoring** — each sentence's context sets the keyword value: hiring context +28, requirements +22, neutral +10, company-brag +3. Role keywords (devops engineer, sre, …) add +14. Negated mentions ("not looking for devops") subtract. Structural signals (years-of-experience pattern, salary, email, apply instruction, bullet lists, remote) add on top. Invalid keywords (visa restrictions, bench posts, courses) subtract 25.
+5. **Evidence gate** — generic keywords (`aws`, `python`, `linux`, `github`, …, see `DEFAULT_WEAK_KEYWORDS`) are never sufficient alone. A post needs a role keyword **or** two non-weak keywords to proceed. Kills data-engineer/frontend posts that merely mention AWS.
+6. **Threshold bands** (confidence 0–100):
+
+| Band | Result |
+|---|---|
+| ≥ 55 | Auto-match — decorated and saved immediately |
+| 25 – 54 | Gray zone — local AI gives an `isJobPosting` verdict before saving |
+| < 25 | Skip |
+
+If AI is unreachable during a gray-zone check, the classifier falls back to the legacy single threshold (40).
+
+Keywords, hiring signals, and invalid keywords are all editable in **Settings**; the weak-keyword tier lives in `shared/keywordConfig.js`.
+
+### Classifier Feedback Loop
+
+![Feedback loop](docs/img/feedback-loop.svg)
+
+The classifier logs every decision (score + feature vector) to `devopsDecisionLog`, and your actions — clicking **Open ↗**, changing a match's status — to `devopsLabelLog`. Export both from the **Diagnostics** page, then:
+
+```bash
+node scripts/analyze-decisions.js devops-scanner-logs-<timestamp>.json
+```
+
+Prints per-feature precision, confidence-band calibration, and (once ≥50 labeled posts exist) logistic-regression weights you can compare against the hand-tuned scores in `content.js` (`V2_CONTEXT_SCORE`, `V2_AUTO_MATCH`, `V2_GRAY_MIN`).
 
 ### Auto-Scroll
 - Automatically scrolls your LinkedIn feed and scans posts hands-free
@@ -187,10 +237,12 @@ Once configured, every new saved match syncs to Notion automatically. Use **Test
 ## Local AI Setup (Ollama)
 
 The extension uses a local AI model via [Ollama](https://ollama.com) to extract structured fields from post text:
-- **Job Title** — the exact role being hired for
-- **Experience Level** — junior / mid / senior / lead / any
+- **Is Job Posting** — true/false verdict, used to resolve gray-zone matches (see [Matching Pipeline](#matching-pipeline))
+- **Job Titles** — the exact role(s) being hired for
 - **VISA Sponsorship** — e.g. "H1B sponsored", "No H1B", "GC/Citizen only", "OPT/CPT accepted"
 - **AI Confidence** — 0–100 score
+
+Output is **schema-constrained** (Ollama structured outputs): the model physically cannot emit anything but valid JSON with these fields, which makes small models (0.5B) reliable for this task.
 
 ### 1. Install Ollama
 
@@ -239,6 +291,8 @@ If you use the Ollama Mac menu bar app, quit it from the menu bar icon before ru
 ### 5. Processing Matches
 
 **New matches** are analyzed automatically after being saved.
+
+**Single post re-process**: every saved post with a Notion link shows a **↻ AI** button in its control bar. Click it to re-run AI (bypassing all caches) and fill any missing Notion fields — existing good fields are preserved. Useful for matches analyzed before a prompt/schema change.
 
 **Existing / backfill**: Click **Process Unanalyzed** in Settings. This will:
 1. Fetch all pages from your Notion database

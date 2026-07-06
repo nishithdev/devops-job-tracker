@@ -151,6 +151,23 @@ const DEFAULT_DEVOPS_KEYWORDS = [
   "spark",
 ];
 
+// Weak keywords — too generic to justify a match on their own. A post whose
+// only DevOps evidence comes from this list needs a role keyword or a second
+// non-weak keyword before it can match (data/frontend posts mention AWS too).
+// Must be a subset of DEFAULT_DEVOPS_KEYWORDS.
+const DEFAULT_WEAK_KEYWORDS = [
+  "aws", "azure", "gcp", "google cloud",
+  "monitoring", "observability",
+  "cloud infrastructure", "cloud operations", "cloud ops", "cloud engineering",
+  "python", "bash", "java", "golang", "go lang", ".net",
+  "react.js", "nodejs", "node.js", "spring boot", "springboot",
+  "linux", "ubuntu", "centos", "redhat",
+  "github", "gitlab", "nginx", "apache",
+  "mongodb", "postgresql", "mysql", "redis", "cassandra", "kafka", "rabbitmq",
+  "databricks", "pyspark", "spark",
+  "iam", "vpc", "ec2", "s3", "rds", "load balancing",
+];
+
 // Hiring signals - stronger match if present
 const DEFAULT_HIRING_SIGNALS = [
   "hiring",
@@ -226,7 +243,8 @@ const DEFAULT_INVALID_KEYWORDS = [
   "have skilled professionals",
   "available consultants",
   "consultants available",
-  "consultants available",
+  "consultant available",
+  "available consultant",
   "hotlist",
   "bench",
 
@@ -261,4 +279,5 @@ const DEFAULT_KEYWORDS = {
   devopsKeywords: DEFAULT_DEVOPS_KEYWORDS,
   hiringSignals: DEFAULT_HIRING_SIGNALS,
   invalidKeywords: DEFAULT_INVALID_KEYWORDS,
+  weakKeywords: DEFAULT_WEAK_KEYWORDS,
 };

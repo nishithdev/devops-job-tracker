@@ -104,7 +104,9 @@ function clearLogs() {
   });
 }
 
-function exportLogs() {
+async function exportLogs() {
+  // Include classifier decision + label logs — input for scripts/analyze-decisions.js
+  const extra = await safeStorageGet(['devopsDecisionLog', 'devopsLabelLog']).catch(() => ({}));
   const data = {
     exportedAt: new Date().toISOString(),
     stats: {
@@ -112,9 +114,11 @@ function exportLogs() {
       matches: parseInt(document.getElementById('stat-matches').textContent),
       logEntries: allLogs.length
     },
-    logs: allLogs
+    logs: allLogs,
+    decisions: extra.devopsDecisionLog || [],
+    labels: extra.devopsLabelLog || []
   };
-  
+
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
