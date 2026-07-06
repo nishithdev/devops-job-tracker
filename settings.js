@@ -6,7 +6,17 @@ const DEFAULT_SETTINGS = {
   invalidKeywords: DEFAULT_INVALID_KEYWORDS,
 };
 
+// Displayed lists = defaults (from shared/keywordConfig.js) + user additions.
+// Only deltas are persisted (customKeywords.added / .disabled) so editing the
+// default arrays in code always syncs to the runtime — see resolveKeywords().
 let currentSettings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+
+// User-added keywords per category (the only keyword data we persist)
+let currentAdded = {
+  devopsKeywords: [],
+  hiringSignals: [],
+  invalidKeywords: [],
+};
 
 // Hit counts loaded from storage (keyword → number of times seen in confirmed matches)
 let currentHitCounts = {};
@@ -18,31 +28,41 @@ let currentDisabled = {
   invalidKeywords: [],
 };
 
+// Rebuild displayed lists from defaults + additions (disabled shown struck-through)
+function rebuildDisplayLists() {
+  Object.keys(DEFAULT_SETTINGS).forEach((key) => {
+    currentSettings[key] = [...new Set([...DEFAULT_SETTINGS[key], ...currentAdded[key]])];
+  });
+}
+
 // Load settings from storage
 function loadSettings() {
   safeStorageGet(['customKeywords', 'keywordHitCounts']).then((result) => {
-    if (result.customKeywords) {
-      currentSettings = result.customKeywords;
-      // Restore disabled state saved alongside keywords
-      if (result.customKeywords.disabled) {
-        currentDisabled = Object.assign({
-          devopsKeywords: [],
-          hiringSignals: [],
-          invalidKeywords: [],
-        }, result.customKeywords.disabled);
-      }
+    const ck = result.customKeywords || {};
+    // extractAddedKeywords handles both delta and legacy-snapshot formats
+    Object.keys(DEFAULT_SETTINGS).forEach((key) => {
+      currentAdded[key] = extractAddedKeywords(ck, key, DEFAULT_SETTINGS[key]);
+    });
+    if (ck.disabled) {
+      currentDisabled = Object.assign({
+        devopsKeywords: [],
+        hiringSignals: [],
+        invalidKeywords: [],
+      }, ck.disabled);
     }
+    rebuildDisplayLists();
     currentHitCounts = result.keywordHitCounts || {};
     renderAllKeywords();
   }).catch((error) => {
     console.error('Failed to load settings:', error);
+    rebuildDisplayLists();
     renderAllKeywords();
   });
 }
 
-// Save settings to storage
+// Save settings to storage (deltas only — defaults live in code)
 function saveSettings() {
-  const payload = Object.assign({}, currentSettings, { disabled: currentDisabled });
+  const payload = { added: currentAdded, disabled: currentDisabled };
   safeStorageSet({ customKeywords: payload }).then(() => {
     showSuccessMessage('Settings saved successfully!');
     // Notify content script to reload keywords
@@ -56,9 +76,9 @@ function saveSettings() {
 // Reset to defaults
 function resetToDefaults() {
   if (confirm('Are you sure you want to reset all keywords to defaults? This cannot be undone.')) {
-    currentSettings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
-    // Also clear all disabled toggles when resetting to defaults
+    currentAdded = { devopsKeywords: [], hiringSignals: [], invalidKeywords: [] };
     currentDisabled = { devopsKeywords: [], hiringSignals: [], invalidKeywords: [] };
+    rebuildDisplayLists();
     saveSettings();
     renderAllKeywords();
   }
@@ -136,15 +156,25 @@ function addKeyword(settingKey, inputId) {
     return;
   }
   
-  currentSettings[settingKey].push(...newKeywords);
+  currentAdded[settingKey].push(...newKeywords);
+  rebuildDisplayLists();
   input.value = '';
   renderKeywords(settingKey, getContainerIdFromSetting(settingKey), getTypeFromSetting(settingKey));
   updateCounts();
 }
 
-// Remove keyword from a group
+// Remove keyword from a group. User-added keywords are deleted; default
+// keywords (defined in shared/keywordConfig.js) can only be disabled from the
+// UI — edit the code to remove them permanently.
 window.removeKeyword = function(settingKey, index) {
-  currentSettings[settingKey].splice(index, 1);
+  const keyword = currentSettings[settingKey][index];
+  const addedIdx = currentAdded[settingKey].indexOf(keyword);
+  if (addedIdx !== -1) {
+    currentAdded[settingKey].splice(addedIdx, 1);
+    rebuildDisplayLists();
+  } else if (!currentDisabled[settingKey].includes(keyword)) {
+    currentDisabled[settingKey].push(keyword);
+  }
   renderKeywords(settingKey, getContainerIdFromSetting(settingKey), getTypeFromSetting(settingKey));
   updateCounts();
 };
@@ -550,6 +580,25 @@ document.getElementById('btn-test-server').addEventListener('click', async () =>
   }
 });
 
+// ---- Diagnostic post capture ---------------------------------------------------
+
+function loadDiagCaptureSetting() {
+  chrome.storage.local.get(['diagCaptureEnabled'], (result) => {
+    document.getElementById('diag-capture-enabled').checked = !!result.diagCaptureEnabled;
+  });
+}
+
+document.getElementById('diag-capture-enabled').addEventListener('change', (e) => {
+  const enabled = e.target.checked;
+  const status = document.getElementById('diag-capture-status');
+  chrome.storage.local.set({ diagCaptureEnabled: enabled }, () => {
+    status.textContent = enabled
+      ? '✅ Capture ON — analyzed posts will be recorded on next scan.'
+      : 'Capture off.';
+    status.style.color = enabled ? '#2e7d32' : '#757575';
+  });
+});
+
 // ---- Notion sync -------------------------------------------------------------
 
 function loadNotionSettings() {
@@ -612,4 +661,5 @@ document.getElementById('btn-test-notion').addEventListener('click', () => {
 loadSettings();
 loadOllamaSettings();
 loadServerSettings();
+loadDiagCaptureSetting();
 loadNotionSettings();

@@ -262,3 +262,37 @@ const DEFAULT_KEYWORDS = {
   hiringSignals: DEFAULT_HIRING_SIGNALS,
   invalidKeywords: DEFAULT_INVALID_KEYWORDS,
 };
+
+// ---- Keyword resolution -------------------------------------------------------
+// This file is the source of truth for default keywords: editing the arrays
+// above always reaches the runtime, even when the user has saved settings.
+// Storage (`customKeywords`) keeps only user deltas:
+//   customKeywords.added    — { category: [keywords added via settings UI] }
+//   customKeywords.disabled — { category: [keywords toggled off] }
+// The legacy format stored full snapshot arrays (customKeywords.devopsKeywords
+// = entire list), which shadowed keywords added to the defaults later. Legacy
+// arrays are treated as additions-beyond-defaults so old installs migrate
+// transparently on first load.
+
+// Extract user additions from either delta or legacy-snapshot storage format
+function extractAddedKeywords(ck, category, defaults) {
+  ck = ck || {};
+  if (ck.added) return ck.added[category] || [];
+  return (ck[category] || []).filter(k => !defaults.includes(k));
+}
+
+// Effective per-category lists: (defaults ∪ added) − disabled
+function resolveKeywords(ck) {
+  ck = ck || {};
+  const disabled = ck.disabled || {};
+  const resolve = (category, defaults) => {
+    const added = extractAddedKeywords(ck, category, defaults);
+    const off = new Set(disabled[category] || []);
+    return [...new Set([...defaults, ...added])].filter(k => !off.has(k));
+  };
+  return {
+    devopsKeywords:  resolve('devopsKeywords',  DEFAULT_DEVOPS_KEYWORDS),
+    hiringSignals:   resolve('hiringSignals',   DEFAULT_HIRING_SIGNALS),
+    invalidKeywords: resolve('invalidKeywords', DEFAULT_INVALID_KEYWORDS),
+  };
+}

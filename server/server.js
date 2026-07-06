@@ -12,6 +12,7 @@ const { WebSocketServer } = require('ws');
 const sqlite3    = require('sqlite3').verbose();
 const http       = require('http');
 const path       = require('path');
+const fs         = require('fs');
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3747;
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'scanner.db');
@@ -274,6 +275,32 @@ app.post('/save', async (req, res) => {
     _chartCache.clear(); // invalidate so next /chart-data fetch reflects this save
     broadcast({ action: 'newMatch', url: match.url, savedBy: resolvedUser });
     res.json({ saved: true, matchId: match.id });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ---- Diagnostic post capture --------------------------------------------------
+// Extension posts every classified post here when diagnostic capture is enabled
+// (Settings → Diagnostics). Appended as JSONL to diagnostics/posts.jsonl so the
+// records can be grepped/replayed offline when debugging misclassifications.
+const DIAG_DIR  = path.join(__dirname, 'diagnostics');
+const DIAG_FILE = path.join(DIAG_DIR, 'posts.jsonl');
+
+app.post('/diag', (req, res) => {
+  try {
+    if (!req.body || !req.body.time) return res.status(400).json({ error: 'missing record' });
+    fs.mkdirSync(DIAG_DIR, { recursive: true });
+    fs.appendFileSync(DIAG_FILE, JSON.stringify(req.body) + '\n');
+    res.json({ saved: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /diag?limit=N — last N captured records (newest last)
+app.get('/diag', (req, res) => {
+  try {
+    if (!fs.existsSync(DIAG_FILE)) return res.json([]);
+    const limit = Math.min(parseInt(req.query.limit) || 50, 500);
+    const lines = fs.readFileSync(DIAG_FILE, 'utf8').trim().split('\n').filter(Boolean);
+    res.json(lines.slice(-limit).map(l => JSON.parse(l)));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

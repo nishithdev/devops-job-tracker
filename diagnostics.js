@@ -29,14 +29,16 @@ function loadData() {
     'devopsScanDebugLog',
     'devopsScanAnalyzed',
     'devopsScanCount',
-    'devopsScanLast'
+    'devopsScanLast',
+    'devopsDiagPosts'
   ]).then((result) => {
     allLogs = result.devopsScanDebugLog || [];
-    
+
     // Update stats
     document.getElementById('stat-analyzed').textContent = result.devopsScanAnalyzed || 0;
     document.getElementById('stat-matches').textContent = result.devopsScanCount || 0;
     document.getElementById('stat-logs').textContent = allLogs.length;
+    document.getElementById('stat-diag').textContent = (result.devopsDiagPosts || []).length;
     
     // Update timestamp
     const lastUpdate = result.devopsScanLast 
@@ -124,8 +126,28 @@ function exportLogs() {
   URL.revokeObjectURL(url);
 }
 
+function exportDiagPosts() {
+  safeStorageGet(['devopsDiagPosts']).then((result) => {
+    const posts = result.devopsDiagPosts || [];
+    if (!posts.length) {
+      alert('No captured posts. Enable diagnostic capture in Settings first.');
+      return;
+    }
+    const blob = new Blob([JSON.stringify(posts, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `devops-scanner-diag-posts-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }).catch((error) => {
+    console.error('Export diag posts error:', error);
+  });
+}
+
 // Event listeners
 document.getElementById('btn-refresh').addEventListener('click', loadData);
+document.getElementById('btn-export-diag').addEventListener('click', exportDiagPosts);
 document.getElementById('btn-clear').addEventListener('click', clearLogs);
 document.getElementById('btn-export').addEventListener('click', exportLogs);
 
@@ -146,8 +168,8 @@ try {
     }
     if (areaName === 'local') {
       // Reload if any relevant key changed
-      if (changes.devopsScanDebugLog || changes.devopsScanAnalyzed || 
-          changes.devopsScanCount || changes.devopsScanLast) {
+      if (changes.devopsScanDebugLog || changes.devopsScanAnalyzed ||
+          changes.devopsScanCount || changes.devopsScanLast || changes.devopsDiagPosts) {
         loadData();
       }
     }

@@ -74,28 +74,20 @@ try {
   // Load custom keywords from storage (filters out disabled keywords)
   function loadCustomKeywords() {
     chrome.storage.local.get(['customKeywords'], (result) => {
-      if (result.customKeywords) {
-        const ck = result.customKeywords;
-        // Get disabled sets for each category (arrays stored under ck.disabled)
-        const disabled = ck.disabled || {};
-        const disabledDevops   = new Set(disabled.devopsKeywords  || []);
-        const disabledHiring   = new Set(disabled.hiringSignals   || []);
-        const disabledInvalid  = new Set(disabled.invalidKeywords || []);
+      // Code defaults always merge in (see resolveKeywords in keywordConfig.js) —
+      // a stored snapshot can never shadow keywords added to the defaults later.
+      const lists = resolveKeywords(result.customKeywords);
+      DEVOPS_KEYWORDS  = lists.devopsKeywords;
+      HIRING_SIGNALS   = lists.hiringSignals;
+      INVALID_KEYWORDS = lists.invalidKeywords;
 
-        DEVOPS_KEYWORDS  = (ck.devopsKeywords  || DEFAULT_DEVOPS_KEYWORDS) .filter(k => !disabledDevops.has(k));
-        HIRING_SIGNALS   = (ck.hiringSignals   || DEFAULT_HIRING_SIGNALS)  .filter(k => !disabledHiring.has(k));
-        INVALID_KEYWORDS = (ck.invalidKeywords || DEFAULT_INVALID_KEYWORDS).filter(k => !disabledInvalid.has(k));
+      // Clear regex cache when keywords change
+      clearRegexCache();
 
-        // Clear regex cache when keywords change
-        clearRegexCache();
-
-        dbg("Custom keywords loaded from settings");
-        dbg("DevOps keywords:", DEVOPS_KEYWORDS.length,  "(disabled:", disabledDevops.size  + ")");
-        dbg("Hiring signals:", HIRING_SIGNALS.length,    "(disabled:", disabledHiring.size   + ")");
-        dbg("Invalid keywords:", INVALID_KEYWORDS.length, "(disabled:", disabledInvalid.size + ")");
-      } else {
-        dbg("Using default keywords (no custom settings found)");
-      }
+      dbg("Keywords resolved (defaults + custom − disabled)");
+      dbg("DevOps keywords:", DEVOPS_KEYWORDS.length);
+      dbg("Hiring signals:", HIRING_SIGNALS.length);
+      dbg("Invalid keywords:", INVALID_KEYWORDS.length);
     });
   }
   
@@ -190,6 +182,47 @@ try {
         // Extension context invalidated - skip storage
       }
     }, 1000);
+  }
+
+  // ---- Diagnostic post capture ----------------------------------------------
+  // When diagCaptureEnabled (Settings → Diagnostics), every classified post is
+  // recorded with its full text and score breakdown so misclassifications can
+  // be replayed offline. Records go to background → local server JSONL file
+  // (server/diagnostics/posts.jsonl) plus a chrome.storage ring buffer.
+  let diagCaptureEnabled = false;
+
+  chrome.storage.local.get(['diagCaptureEnabled'], (r) => {
+    diagCaptureEnabled = !!r.diagCaptureEnabled;
+    if (diagCaptureEnabled) dbg('diagnostic capture ON');
+  });
+  createStorageObserver(['diagCaptureEnabled'], (changes) => {
+    diagCaptureEnabled = !!changes.diagCaptureEnabled.newValue;
+    dbg('diagnostic capture', diagCaptureEnabled ? 'ON' : 'OFF');
+  });
+
+  function captureDiag(source, postEl, text, info) {
+    if (!diagCaptureEnabled) return;
+    try {
+      chrome.runtime.sendMessage({
+        action: 'diagCapture',
+        record: {
+          time: new Date().toISOString(),
+          source, // 'feed' | 'jobs'
+          pageUrl: location.href,
+          postUrl: (postEl && getPostUrl(postEl)) || null,
+          decision: info.match ? 'match' : 'skip',
+          confidence: info.confidence ?? null,
+          devopsHits: info.devopsHits || [],
+          hiringHits: info.hiringHits || [],
+          invalidHit: info.invalidHit || null,
+          v2signals: info.v2signals || [],
+          textLen: text.length,
+          text,
+        },
+      }, () => { void chrome.runtime.lastError; });
+    } catch (e) {
+      // Extension context invalidated - skip
+    }
   }
 
   // ---- Helpers -------------------------------------------------------------
@@ -1928,6 +1961,7 @@ try {
         if (text.length <= prevLen) return;
       }
       const info = classifyV2(text, postEl);
+      captureDiag('feed', postEl, text, info);
       bumpAnalyzed(postEl);
       if (info.match) {
         dbg("match:", info.devopsHits.join(', '), info.hiringHit ? `+ ${info.hiringHit}` : "");
@@ -2312,6 +2346,7 @@ try {
       if (url) seenJobs.add(url);
 
       const info = classifyV2(cardText, card);
+      captureDiag('jobs', card, cardText, info);
       if (!info.match) return;
 
       decorateJobCard(card, info, url);

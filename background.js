@@ -256,8 +256,43 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'updateMatchStatus': return handleUpdateMatchStatus(message, sendResponse);
     case 'storeAIAnalysis':  return handleStoreAIAnalysis(message, sendResponse);
     case 'clearBadge':       _clearBadge(); sendResponse({ ok: true }); return;
+    case 'diagCapture':      return handleDiagCapture(message, sendResponse);
   }
 });
+
+// ---- Diagnostic post capture --------------------------------------------------
+// Forwards captured post records to the local server (POST /diag → JSONL file)
+// and mirrors the last DIAG_BUFFER_MAX into chrome.storage as a fallback so the
+// diagnostics page can export them when no server is configured.
+const DIAG_BUFFER_MAX = 150;
+let _diagWriteChain = Promise.resolve(); // serialize read-modify-write on the buffer
+
+function handleDiagCapture(message, sendResponse) {
+  const record = message.record;
+  if (!record) { sendResponse({ ok: false }); return; }
+
+  _diagWriteChain = _diagWriteChain.then(() => new Promise((resolve) => {
+    chrome.storage.local.get(['devopsDiagPosts', 'localServerUrl'], (s) => {
+      const buf = s.devopsDiagPosts || [];
+      buf.push(record);
+      if (buf.length > DIAG_BUFFER_MAX) buf.splice(0, buf.length - DIAG_BUFFER_MAX);
+      chrome.storage.local.set({ devopsDiagPosts: buf }, () => {
+        void chrome.runtime.lastError;
+        resolve();
+      });
+
+      if (s.localServerUrl) {
+        fetch(`${s.localServerUrl}/diag`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(record),
+        }).catch(() => {}); // best-effort; storage buffer is the fallback
+      }
+    });
+  }));
+
+  sendResponse({ ok: true });
+}
 
 function handleReloadKeywords(message, sendResponse) {
   chrome.tabs.query({ url: 'https://www.linkedin.com/*' }, (tabs) => {
