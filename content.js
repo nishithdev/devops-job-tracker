@@ -652,6 +652,20 @@ try {
       aiTag.textContent = '⏳ AI…';
       aiTag.style.cssText = 'font-size:10px;color:#7c3aed;background:#ede9fe;border-radius:4px;padding:2px 6px;margin-left:4px;';
       bar.appendChild(aiTag);
+
+      // Re-run AI + Notion sync, bypassing all caches (for bad AI extractions)
+      const rescanBtn = document.createElement('button');
+      rescanBtn.className = 'devops-scan-rescan-btn';
+      rescanBtn.type = 'button';
+      rescanBtn.textContent = '🔄';
+      rescanBtn.title = 'Re-run AI analysis and update Notion';
+      rescanBtn.style.cssText = 'font-size:11px;background:none;border:none;cursor:pointer;padding:0 2px;margin-left:2px;opacity:0.7;';
+      rescanBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        rescanAIForPost(postEl, url, text, rescanBtn);
+      });
+      bar.appendChild(rescanBtn);
     }
 
     if (url) {
@@ -757,12 +771,56 @@ try {
     });
   }
 
+  // Re-run AI on a saved match, bypassing the local + server AI caches, then
+  // re-sync the result to Notion. Wired to the 🔄 button on decorated posts.
+  function rescanAIForPost(postEl, url, originalText, rescanBtn) {
+    if (rescanBtn.disabled) return;
+    const tag = postEl.querySelector('.devops-scan-ai-tag');
+    const setTag = (txt, color, bg) => {
+      if (!tag) return;
+      tag.textContent = txt;
+      tag.style.color = color;
+      tag.style.background = bg;
+    };
+
+    // Re-read the post text at click time — it may have expanded since decorate()
+    const text = getPostText(postEl) || originalText;
+
+    chrome.storage.local.get(['devopsSavedMatches'], (result) => {
+      if (chrome.runtime.lastError) return;
+      const match = findSavedMatch(result.devopsSavedMatches || [], url, text.substring(0, 80));
+      if (!match) {
+        setTag('❌ Not saved yet', '#b91c1c', '#fee2e2');
+        return;
+      }
+
+      rescanBtn.disabled = true;
+      rescanBtn.style.opacity = '0.35';
+      setTag('⏳ AI…', '#7c3aed', '#ede9fe');
+      dbg('rescan AI requested for', url || match.id);
+
+      _runAIAndSync({
+        matchId: match.id,
+        text: match.fullText || text,
+        match,
+        postEl,
+        useQueue: true,
+        force: true,
+        onDone: (matchWithAI, syncResp) => {
+          rescanBtn.disabled = false;
+          rescanBtn.style.opacity = '0.7';
+          if (matchWithAI && syncResp?.notionPageId) setNotionLink(postEl, syncResp.notionPageId);
+        },
+      });
+    });
+  }
+
   // Shared helper: analyzeWithAI → storeAIAnalysis → syncMatchToNotion.
   // missingFields: string[] → merge-only update; null/undefined → full replace.
   // onDone(matchWithAI, syncResp) on success; onDone(null) on error.
-  function _runAIAndSync({ matchId, text, match, postEl, useQueue = false, missingFields, onDone } = {}) {
+  function _runAIAndSync({ matchId, text, match, postEl, useQueue = false, missingFields, force = false, onDone } = {}) {
     if (useQueue) updateAIQueue(+1);
-    chrome.runtime.sendMessage({ action: 'analyzeWithAI', text, matchId }, (aiResp) => {
+    chrome.runtime.sendMessage({ action: 'analyzeWithAI', text, matchId, force }, (aiResp) => {
       if (useQueue) updateAIQueue(-1);
       if (chrome.runtime.lastError || !aiResp?.success) {
         if (!missingFields) {

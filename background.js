@@ -537,8 +537,8 @@ function handleAnalyzeWithAI(message, sendResponse) {
   const incomingHash = hashText(text);
 
   chrome.storage.local.get(['localServerUrl', 'ollamaUrl', 'ollamaModel', 'devopsSavedMatches'], async (s) => {
-    // Check local cache first regardless of server
-    if (message.matchId) {
+    // Check local cache first regardless of server (skipped on force re-scan)
+    if (message.matchId && !message.force) {
       const match = (s.devopsSavedMatches || []).find(m => m.id === message.matchId);
       if (match && match.aiTextHash === incomingHash && match.aiAnalysis && !match.aiAnalysis._error) {
         sendResponse({ success: true, analysis: match.aiAnalysis, skipped: true });
@@ -554,6 +554,7 @@ function handleAnalyzeWithAI(message, sendResponse) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             text, hash: incomingHash,
+            force: !!message.force,
             ollamaUrl: s.ollamaUrl || 'http://localhost:11434',
             ollamaModel: s.ollamaModel || 'gemma3',
           }),

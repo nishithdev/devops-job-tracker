@@ -14,6 +14,10 @@ Chrome extension (Manifest v3) that scans LinkedIn feed/search/jobs pages for De
 Default keyword lists live in `shared/keywordConfig.js` (`DEFAULT_DEVOPS_KEYWORDS`, `DEFAULT_HIRING_SIGNALS`, `DEFAULT_INVALID_KEYWORDS`). Edit them there — they always reach the runtime. Storage key `customKeywords` holds only user deltas: `{ added: {category: []}, disabled: {category: []} }`. Effective list = `resolveKeywords()` = (defaults ∪ added) − disabled. Legacy full-snapshot storage (pre-delta installs) is auto-migrated: stored arrays are treated as additions beyond defaults, so a stale snapshot can never shadow keywords added to code later. Settings-UI "×" on a default keyword disables it (only code edits remove defaults); "×" on a user-added keyword deletes it. After a code edit, reload the extension (content script reads keywords at inject + on `reloadKeywords` message).
 - `settings.html/js`, `diagnostics.html/js`, `popup.html/js`, `saved.html/js` — extension pages
 
+## AI re-scan button
+
+Decorated posts have a 🔄 button next to the AI tag: re-runs AI analysis with `force: true` and re-syncs to Notion (PATCHes the existing page via `notionPageId`, never duplicates). Force propagates through `rescanAIForPost` (content.js) → `handleAnalyzeWithAI` (background.js, skips local `aiTextHash` cache) → `POST /ai` with `force` (server evicts `aiCache` + `ai_cache` DB row before queueing).
+
 ## Diagnostic post capture (debugging misclassifications)
 
 When a post is wrongly matched/skipped, use the capture pipeline to get the exact text and score breakdown the classifier saw:

@@ -352,11 +352,18 @@ app.patch('/status', async (req, res) => {
 // POST /ai — shared Ollama analysis with hash-based dedup
 app.post('/ai', async (req, res) => {
   const {
-    text, hash,
+    text, hash, force,
     ollamaUrl   = 'http://localhost:11434',
     ollamaModel = 'qwen2.5:0.5b',
   } = req.body;
   if (!text || !hash) return res.status(400).json({ error: 'missing text or hash' });
+
+  // force = re-scan request: evict cached analysis so the job runs fresh.
+  // Must clear before the queued job completes — GET /ai/:hash serves aiCache first.
+  if (force) {
+    aiCache.delete(hash);
+    db.run('DELETE FROM ai_cache WHERE text_hash = ?', [hash]).catch(() => {});
+  }
 
   if (aiCache.has(hash)) {
     const cached = aiCache.get(hash);
