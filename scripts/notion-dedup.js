@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * notion-dedup.js — find and remove duplicate Notion DB entries by URL.
+ * notion-dedup.js: find and remove duplicate Notion DB entries by URL.
  *
  * Usage:
  *   NOTION_TOKEN=secret_xxx NOTION_DB_ID=yyy node scripts/notion-dedup.js [--dry-run]

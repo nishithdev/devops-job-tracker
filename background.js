@@ -2,7 +2,7 @@
 // Handles keyboard shortcuts and extension-level events
 
 // ---- Device identity --------------------------------------------------------
-// Stable UUID per Chrome profile — used as saved_by fallback when no userName set
+// Stable UUID per Chrome profile: used as saved_by fallback when no userName set
 function _ensureDeviceId() {
   chrome.storage.local.get(['deviceId'], (s) => {
     if (!s.deviceId) {
@@ -14,7 +14,7 @@ function _ensureDeviceId() {
 }
 _ensureDeviceId();
 
-// Serial storage mutex — prevents concurrent read-modify-write races on devopsSavedMatches.
+// Serial storage mutex: prevents concurrent read-modify-write races on devopsSavedMatches.
 // ALL read-modify-writes of devopsSavedMatches must go through this lock.
 let _storageLockQueue = Promise.resolve();
 function _withStorageLock(task) {
@@ -405,7 +405,7 @@ async function _syncMatchToNotion(match) {
         _updateMatch(match.id, m => { m.notionPageId = data.id; });
         // Relay notionPageId to server so other users can find it on dedup.
         // Match by id too (url can be null). If the server is unreachable,
-        // queue a server-sync retry — /save backfills notion_page_id, so the
+        // queue a server-sync retry: /save backfills notion_page_id, so the
         // row won't show as unsynced forever after a lost PATCH.
         chrome.storage.local.get(['localServerUrl'], (res) => {
           if (res.localServerUrl) {
@@ -423,7 +423,7 @@ async function _syncMatchToNotion(match) {
     }
 
     const errText = await r.text();
-    // 404 on PATCH = page deleted in Notion — clear local ID and retry as POST
+    // 404 on PATCH = page deleted in Notion: clear local ID and retry as POST
     if (r.status === 404 && notionPageId) {
       _updateMatch(match.id, m => { delete m.notionPageId; });
       // Retry once as a fresh POST
@@ -565,7 +565,7 @@ function handleAnalyzeWithAI(message, sendResponse) {
           }),
         });
         let result = await r.json();
-        // Server no longer blocks on the queue — poll for the result
+        // Server no longer blocks on the queue: poll for the result
         if (result.queued) result = await _pollServerAI(s.localServerUrl, incomingHash);
         if (result.success) result.textHash = incomingHash;
         sendResponse(result);
@@ -584,7 +584,7 @@ function handleAnalyzeWithAI(message, sendResponse) {
   return true;
 }
 
-// ---- Atomic saveMatch — local-first, parallel background sync ---------------
+// ---- Atomic saveMatch: local-first, parallel background sync ---------------
 // Priority: local storage (instant) → server + Notion fire in parallel after respond
 function handleSaveMatch(message, sendResponse) {
   _withStorageLock((resolve) => {
@@ -603,7 +603,7 @@ function handleSaveMatch(message, sendResponse) {
       // Stable identity: notionUserName > deviceId UUID > anonymous
       const userName = s.notionUserName || s.deviceId || null;
 
-      // Save locally — respond immediately, don't wait for server or Notion
+      // Save locally: respond immediately, don't wait for server or Notion
       existing.unshift(match);
       if (existing.length > 500) existing.length = 500;
       chrome.storage.local.set({ devopsSavedMatches: existing }, () => {
@@ -612,9 +612,9 @@ function handleSaveMatch(message, sendResponse) {
           resolve();
           return;
         }
-        resolve(); // release lock — remaining work doesn't touch devopsSavedMatches directly
+        resolve(); // release lock: remaining work doesn't touch devopsSavedMatches directly
         _incrementBadge();
-        sendResponse({ saved: true }); // instant — content.js unblocked now
+        sendResponse({ saved: true }); // instant: content.js unblocked now
 
         // Fire server POST in background (non-blocking)
         if (s.localServerUrl) {
@@ -624,10 +624,10 @@ function handleSaveMatch(message, sendResponse) {
             body: JSON.stringify({ match, userName }),
           }).then(r => r.json()).then(data => {
             if (data.duplicate && data.notionPageId) {
-              // Another device already saved — pull their notionPageId into local
+              // Another device already saved: pull their notionPageId into local
               _updateMatch(match.id, m => { if (!m.notionPageId) m.notionPageId = data.notionPageId; });
             }
-          }).catch(() => _enqueueServerSync(match)); // server offline — retry queue
+          }).catch(() => _enqueueServerSync(match)); // server offline: retry queue
         }
       });
     });

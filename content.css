@@ -7,14 +7,14 @@
   transition: outline-color 0.15s ease, opacity 0.15s ease;
 }
 
-/* Already-applied post — dimmed, gray outline */
+/* Already-applied post: dimmed, gray outline */
 .devops-scan-match--applied {
   outline-color: #9e9e9e !important;
   box-shadow: none !important;
   opacity: 0.6;
 }
 
-/* Inline label bar — sits above the post text, never overlaps it */
+/* Inline label bar: sits above the post text, never overlaps it */
 .devops-scan-bar {
   display: flex;
   flex-wrap: wrap;
@@ -202,7 +202,7 @@
   color: #333;
 }
 
-/* Keyword highlighting — background only, no font or colour overrides */
+/* Keyword highlighting: background only, no font or colour overrides */
 mark.devops-scan-highlight--devops,
 mark.devops-scan-highlight--invalid {
   padding: 0 1px;

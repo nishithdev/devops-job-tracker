@@ -31,7 +31,7 @@ function updateNotionStatus() {
     const section = document.getElementById('notion-sync-section');
     const el = document.getElementById('notion-sync-status');
     const unsyncedBtn = document.getElementById('notion-sync-unsynced');
-    if (!res.notionToken || !res.notionDatabaseId) return; // not configured — keep hidden
+    if (!res.notionToken || !res.notionDatabaseId) return; // not configured: keep hidden
     section.style.display = '';
 
     const matches = res.devopsSavedMatches || [];
@@ -41,7 +41,7 @@ function updateNotionStatus() {
 
     const last = res.notionLastSync;
     if (!last) {
-      el.innerHTML = '<span style="color:#757575;">No syncs yet — waiting for first match.</span>';
+      el.innerHTML = '<span style="color:#757575;">No syncs yet. Waiting for first match.</span>';
       return;
     }
     const ago = Math.round((Date.now() - last.ts) / 1000);
@@ -52,7 +52,7 @@ function updateNotionStatus() {
       const errText = last.error || 'Unknown error';
       el.innerHTML = `
         <span class="notion-error-trigger" style="color:#c62828;cursor:default;position:relative;display:inline-block;">
-          ❌ Last sync failed (${agoStr}) — hover for details
+          ❌ Last sync failed (${agoStr}). Hover for details
           <span class="notion-error-tooltip">${errText}</span>
         </span>`;
     }
@@ -173,7 +173,7 @@ function updateRecentMatches(matches) {
   }).join('');
 }
 
-// Open match URL in new tab — delegated listener (CSP-safe, no inline handlers)
+// Open match URL in new tab: delegated listener (CSP-safe, no inline handlers)
 document.addEventListener('click', (e) => {
   const card = e.target.closest('[data-action="open-match"]');
   if (!card) return;
@@ -259,12 +259,12 @@ document.getElementById('notion-test-sync').addEventListener('click', () => {
       return;
     }
     if (resp && resp.success) {
-      el.innerHTML = '<span style="color:#2e7d32;">✅ Test sync succeeded — check your Notion database.</span>';
+      el.innerHTML = '<span style="color:#2e7d32;">✅ Test sync succeeded. Check your Notion database.</span>';
     } else if (resp && resp.skipped) {
-      el.innerHTML = '<span style="color:#e65100;">⚠️ No credentials saved — configure in Settings first.</span>';
+      el.innerHTML = '<span style="color:#e65100;">⚠️ No credentials saved. Configure in Settings first.</span>';
     } else {
       const err = (resp && resp.error) || 'Unknown error';
-      el.innerHTML = `<span class="notion-error-trigger" style="color:#c62828;cursor:default;position:relative;display:inline-block;">❌ Failed — hover for details<span class="notion-error-tooltip">${err}</span></span>`;
+      el.innerHTML = `<span class="notion-error-trigger" style="color:#c62828;cursor:default;position:relative;display:inline-block;">❌ Failed. Hover for details<span class="notion-error-tooltip">${err}</span></span>`;
     }
   });
 });
@@ -288,7 +288,7 @@ document.getElementById('notion-sync-unsynced').addEventListener('click', async 
   btn.disabled = false;
   el.innerHTML = fail === 0
     ? `<span style="color:#2e7d32;">✅ Synced ${ok} match${ok !== 1 ? 'es' : ''}.</span>`
-    : `<span style="color:#e65100;">⚠️ ${ok} synced, ${fail} failed — check credentials.</span>`;
+    : `<span style="color:#e65100;">⚠️ ${ok} synced, ${fail} failed. Check credentials.</span>`;
   updateNotionStatus();
 });
 

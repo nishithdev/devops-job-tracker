@@ -1,7 +1,7 @@
 // LinkedIn DevOps Scanner - Keyword Configuration
 // Single source of truth for all keyword arrays
 
-// DevOps keywords — posts must contain at least one of these to be considered a match.
+// DevOps keywords: posts must contain at least one of these to be considered a match.
 // Includes both role/function terms and the specific technologies that appear in job posts.
 const DEFAULT_DEVOPS_KEYWORDS = [
   // Roles & functions
@@ -177,7 +177,7 @@ const DEFAULT_HIRING_SIGNALS = [
   "we are recruiting",
 ];
 
-// Invalid keywords — posts that contain ANY of these are shown as "⚠️ Not valid"
+// Invalid keywords: posts that contain ANY of these are shown as "⚠️ Not valid"
 // and are never saved.  Covers both hard disqualifiers (citizenship/visa/no-c2c)
 // and noise/training content (bootcamps, courses) that sometimes slip through
 // with hiring signals.
@@ -266,8 +266,8 @@ const DEFAULT_KEYWORDS = {
 // This file is the source of truth for default keywords: editing the arrays
 // above always reaches the runtime, even when the user has saved settings.
 // Storage (`customKeywords`) keeps only user deltas:
-//   customKeywords.added    — { category: [keywords added via settings UI] }
-//   customKeywords.disabled — { category: [keywords toggled off] }
+//   customKeywords.added: { category: [keywords added via settings UI] }
+//   customKeywords.disabled: { category: [keywords toggled off] }
 // The legacy format stored full snapshot arrays (customKeywords.devopsKeywords
 // = entire list), which shadowed keywords added to the defaults later. Legacy
 // arrays are treated as additions-beyond-defaults so old installs migrate
@@ -296,7 +296,7 @@ function resolveKeywords(ck) {
   };
 }
 
-// Node (tests) — no-op in the content-script world
+// Node (tests): no-op in the content-script world
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     DEFAULT_DEVOPS_KEYWORDS,

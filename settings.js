@@ -8,7 +8,7 @@ const DEFAULT_SETTINGS = {
 
 // Displayed lists = defaults (from shared/keywordConfig.js) + user additions.
 // Only deltas are persisted (customKeywords.added / .disabled) so editing the
-// default arrays in code always syncs to the runtime — see resolveKeywords().
+// default arrays in code always syncs to the runtime: see resolveKeywords().
 let currentSettings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
 
 // User-added keywords per category (the only keyword data we persist)
@@ -60,7 +60,7 @@ function loadSettings() {
   });
 }
 
-// Save settings to storage (deltas only — defaults live in code)
+// Save settings to storage (deltas only: defaults live in code)
 function saveSettings() {
   const payload = { added: currentAdded, disabled: currentDisabled };
   safeStorageSet({ customKeywords: payload }).then(() => {
@@ -165,7 +165,7 @@ function addKeyword(settingKey, inputId) {
 
 // Remove keyword from a group. User-added keywords are deleted; default
 // keywords (defined in shared/keywordConfig.js) can only be disabled from the
-// UI — edit the code to remove them permanently.
+// UI: edit the code to remove them permanently.
 window.removeKeyword = function(settingKey, index) {
   const keyword = currentSettings[settingKey][index];
   const addedIdx = currentAdded[settingKey].indexOf(keyword);
@@ -268,7 +268,7 @@ document.getElementById('btn-save-ollama').addEventListener('click', () => {
   const concurrency = parseInt(document.getElementById('ollama-concurrency').value, 10) || 1;
   const status = document.getElementById('ollama-status');
   chrome.storage.local.set({ ollamaUrl: url, ollamaModel: model, aiConcurrency: concurrency }, () => {
-    status.textContent = `✅ Saved — ${model} @ ${url} (concurrency: ${concurrency})`;
+    status.textContent = `✅ Saved: ${model} @ ${url} (concurrency: ${concurrency})`;
     status.style.color = '#2e7d32';
     setTimeout(() => { status.textContent = ''; }, 3000);
   });
@@ -289,15 +289,15 @@ document.getElementById('btn-test-ollama').addEventListener('click', () => {
     .then(async r => {
       if (r.ok) {
         const d = await r.json();
-        status.textContent = `✅ Connected — using ${model} — responded: "${(d.response || '').trim().substring(0, 60)}"`;
+        status.textContent = `✅ Connected using ${model}. Responded: "${(d.response || '').trim().substring(0, 60)}"`;
         status.style.color = '#2e7d32';
       } else {
-        status.textContent = `❌ ${r.status} — is Ollama running and is "${model}" pulled?`;
+        status.textContent = `❌ ${r.status}. Is Ollama running and is "${model}" pulled?`;
         status.style.color = '#c62828';
       }
     })
     .catch(err => {
-      status.textContent = `❌ ${err.message} — is Ollama running at ${url}?`;
+      status.textContent = `❌ ${err.message}. Is Ollama running at ${url}?`;
       status.style.color = '#c62828';
     });
 });
@@ -364,14 +364,14 @@ async function runBulkAnalysis(matchFilter = null) {
         cursor = data.next_cursor;
 
         for (const page of (data.results || [])) {
-          // Archived = deleted in Notion — treat as source of truth, skip entirely
+          // Archived = deleted in Notion: treat as source of truth, skip entirely
           if (page.archived) continue;
 
           activeNotionIds.add(page.id);
           const props = page.properties || {};
           const notionPageId = page.id;
 
-          // Already in local storage — sync Notion AI state back to local
+          // Already in local storage: sync Notion AI state back to local
           const existing = localMatches.find(m => m.notionPageId === notionPageId);
           if (existing) {
             const notionJobTitle    = (props['Job Title']?.rich_text   || []).map(b => b.plain_text || '').join('').trim();
@@ -432,7 +432,7 @@ async function runBulkAnalysis(matchFilter = null) {
   const analyzed = matches.filter(m => !m.notionDeleted && !needsAnalysis(m)).length;
   const pending  = matches.filter(m => !m.notionDeleted && needsAnalysis(m) && (!matchFilter || matchFilter(m)));
 
-  logLine(`Total: ${matches.length} matches — ${analyzed} analyzed, ${pending.length} pending, ${deleted} deleted/archived`, 'info');
+  logLine(`Total: ${matches.length} matches (${analyzed} analyzed, ${pending.length} pending, ${deleted} deleted/archived)`, 'info');
 
   // Break down pending by which fields are missing
   const fieldCounts = {};
@@ -464,12 +464,12 @@ async function runBulkAnalysis(matchFilter = null) {
 
     const label = match.author || match.id;
     const missing = match._missingFields && match._missingFields.length ? match._missingFields : null;
-    textEl.textContent = `Processing ${done + 1} / ${pending.length} — "${label}"…`;
-    logLine(`[${done + 1}/${pending.length}] "${label}" — missing: ${missing ? missing.join(', ') : 'all AI fields'}`, 'warn');
+    textEl.textContent = `Processing ${done + 1} / ${pending.length}: "${label}"…`;
+    logLine(`[${done + 1}/${pending.length}] "${label}", missing: ${missing ? missing.join(', ') : 'all AI fields'}`, 'warn');
 
     const text = match.fullText || match.snippet || '';
     if (!text) {
-      logLine(`  Skipped — no post text available.`, 'warn');
+      logLine(`  Skipped: no post text available.`, 'warn');
       done++; continue;
     }
 
@@ -490,7 +490,7 @@ async function runBulkAnalysis(matchFilter = null) {
       await new Promise(r =>
         chrome.runtime.sendMessage({ action: 'storeAIAnalysis', matchId: match.id, analysis: aiResp.analysis, textHash: aiResp.textHash, timeToProcess: aiResp.timeToProcess, model: aiResp.model, tokens: aiResp.tokens, missingFields: match._missingFields || null }, r)
       );
-      // PATCH Notion page with AI fields — notionPageId already on match from prior sync
+      // PATCH Notion page with AI fields: notionPageId already on match from prior sync
       const matchWithAI = { ...match, aiAnalysis: aiResp.analysis };
       {
         const syncResp = await new Promise(r =>
@@ -500,14 +500,14 @@ async function runBulkAnalysis(matchFilter = null) {
           logLine(`[${done + 1}/${pending.length}] Notion sync error for "${label}": ${syncResp.error}`, 'error');
           errors++;
         } else {
-          logLine(`[${done + 1}/${pending.length}] OK "${label}" — ${aiResp.tokens ?? '?'} tokens, ${aiResp.timeToProcess ?? '?'}ms`, 'ok');
+          logLine(`[${done + 1}/${pending.length}] OK "${label}": ${aiResp.tokens ?? '?'} tokens, ${aiResp.timeToProcess ?? '?'}ms`, 'ok');
         }
       }
     } else {
       const errMsg = (aiResp && aiResp.error) || 'no response';
       if (aiResp && aiResp.error === 'context_too_long') {
         await new Promise(r => chrome.runtime.sendMessage({ action: 'storeAIAnalysis', matchId: match.id, analysis: { _error: 'context_too_long' } }, r));
-        logLine(`[${done + 1}/${pending.length}] Skipped "${label}" — context too long for model.`, 'warn');
+        logLine(`[${done + 1}/${pending.length}] Skipped "${label}": context too long for model.`, 'warn');
       } else {
         logLine(`[${done + 1}/${pending.length}] AI error for "${label}": ${errMsg}`, 'error');
         errors++;
@@ -519,7 +519,7 @@ async function runBulkAnalysis(matchFilter = null) {
   }
 
   const stopped = bulkStopped ? ' (stopped early)' : '';
-  textEl.textContent = `✅ Done — ${done} processed, ${errors} errors${stopped}.`;
+  textEl.textContent = `✅ Done: ${done} processed, ${errors} errors${stopped}.`;
   logLine(`Finished: ${done} processed, ${errors} error${errors !== 1 ? 's' : ''}${stopped}.`, errors > 0 ? 'warn' : 'ok');
   startBtn.disabled = false;
   startBtnToday.disabled = false;
@@ -568,7 +568,7 @@ document.getElementById('btn-test-server').addEventListener('click', async () =>
     const r = await fetch(`${url}/health`);
     if (r.ok) {
       const data = await r.json();
-      status.textContent = `✅ Connected — ${data.matches} matches, ${data.aiCacheSize} AI cache entries, ${data.wsClients} active clients`;
+      status.textContent = `✅ Connected: ${data.matches} matches, ${data.aiCacheSize} AI cache entries, ${data.wsClients} active clients`;
       status.style.color = '#2e7d32';
     } else {
       status.textContent = `⚠️ Server returned ${r.status}`;
@@ -593,7 +593,7 @@ document.getElementById('diag-capture-enabled').addEventListener('change', (e) =
   const status = document.getElementById('diag-capture-status');
   chrome.storage.local.set({ diagCaptureEnabled: enabled }, () => {
     status.textContent = enabled
-      ? '✅ Capture ON — analyzed posts will be recorded on next scan.'
+      ? '✅ Capture ON. Analyzed posts will be recorded on next scan.'
       : 'Capture off.';
     status.style.color = enabled ? '#2e7d32' : '#757575';
   });

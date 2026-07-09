@@ -1,4 +1,4 @@
-// DevOps Scanner — local coordination server
+// DevOps Scanner: local coordination server
 // Handles dedup, shared AI queue, SQLite persistence, WebSocket push.
 // Notion sync remains in the extension (token stays on each user's machine).
 //
@@ -19,7 +19,7 @@ const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'scanner.db');
 
 // ---- Helpers ----------------------------------------------------------------
 
-// Must stay identical to hashText in background.js — cache keys are shared
+// Must stay identical to hashText in background.js; cache keys are shared
 function hashText(str) {
   let h = 5381;
   for (let i = 0; i < str.length; i++) h = ((h << 5) + h) ^ str.charCodeAt(i);
@@ -250,12 +250,12 @@ async function runOllama(text, baseUrl, model) {
 
 // ---- Routes -----------------------------------------------------------------
 
-// POST /save — atomic dedup + persist
+// POST /save: atomic dedup + persist
 app.post('/save', async (req, res) => {
   try {
     const { match, userName } = req.body;
     if (!match?.id) return res.status(400).json({ error: 'missing match.id' });
-    // Extension sends notionUserName or stable deviceId UUID — no IP fallback needed
+    // Extension sends notionUserName or stable deviceId UUID: no IP fallback needed
     const resolvedUser = userName || null;
     const notionPageId = match.notionPageId || null;
     const now = Date.now();
@@ -263,7 +263,7 @@ app.post('/save', async (req, res) => {
     if (match.url) {
       const existing = await db.get('SELECT id, notion_page_id FROM matches WHERE url = ?', [match.url]);
       if (existing) {
-        // Backfill notion_page_id when this client knows it and the row doesn't —
+        // Backfill notion_page_id when this client knows it and the row doesn't;
         // covers a lost /notion-page-id PATCH (server was down) and a second user
         // whose extension finished the Notion sync first.
         if (!existing.notion_page_id && notionPageId) {
@@ -278,7 +278,7 @@ app.post('/save', async (req, res) => {
       [match.id, match.url || null, notionPageId, resolvedUser, JSON.stringify(match), now, now]
     );
     // INSERT OR IGNORE keeps the old row when this id was saved before (retry
-    // of a match first saved without a notionPageId) — backfill it.
+    // of a match first saved without a notionPageId): backfill it.
     if (notionPageId) {
       await db.run('UPDATE matches SET notion_page_id = ?, updated_at = ? WHERE id = ? AND notion_page_id IS NULL', [notionPageId, now, match.id]);
     }
@@ -305,7 +305,7 @@ app.post('/diag', (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET /diag?limit=N — last N captured records (newest last)
+// GET /diag?limit=N, last N captured records (newest last)
 app.get('/diag', (req, res) => {
   try {
     if (!fs.existsSync(DIAG_FILE)) return res.json([]);
@@ -315,7 +315,7 @@ app.get('/diag', (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET /matches — recent matches (for local cache rebuild on extension load)
+// GET /matches: recent matches (for local cache rebuild on extension load)
 app.get('/matches', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit) || 200, 500);
@@ -330,7 +330,7 @@ app.get('/matches', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// PATCH /notion-page-id — store notionPageId once extension Notion sync completes
+// PATCH /notion-page-id: store notionPageId once extension Notion sync completes
 app.patch('/notion-page-id', async (req, res) => {
   try {
     const { url, matchId, notionPageId } = req.body;
@@ -343,7 +343,7 @@ app.patch('/notion-page-id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// PATCH /status — update match status in local DB
+// PATCH /status: update match status in local DB
 app.patch('/status', async (req, res) => {
   try {
     const { url, matchId, status } = req.body;
@@ -360,7 +360,7 @@ app.patch('/status', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST /ai — shared Ollama analysis with hash-based dedup
+// POST /ai: shared Ollama analysis with hash-based dedup
 app.post('/ai', async (req, res) => {
   const {
     text, hash, force,
@@ -370,7 +370,7 @@ app.post('/ai', async (req, res) => {
   if (!text || !hash) return res.status(400).json({ error: 'missing text or hash' });
 
   // force = re-scan request: evict cached analysis so the job runs fresh.
-  // Must clear before the queued job completes — GET /ai/:hash serves aiCache first.
+  // Must clear before the queued job completes: GET /ai/:hash serves aiCache first.
   if (force) {
     aiCache.delete(hash);
     db.run('DELETE FROM ai_cache WHERE text_hash = ?', [hash]).catch(() => {});
@@ -386,13 +386,13 @@ app.post('/ai', async (req, res) => {
   }
 
   const cleanUrl = ollamaUrl.replace(/\/$/, '');
-  // Persist job before enqueuing — survives restart
+  // Persist job before enqueuing: survives restart
   await db.run(
     'INSERT OR IGNORE INTO ai_queue (hash, text, ollama_url, ollama_model, created_at) VALUES (?, ?, ?, ?, ?)',
     [hash, text, cleanUrl, ollamaModel, Date.now()]
   ).catch(() => {});
 
-  // Don't hold the HTTP request open for the whole queue — client polls GET /ai/:hash
+  // Don't hold the HTTP request open for the whole queue: client polls GET /ai/:hash
   if (aiActiveHash !== hash && !aiQueue.some(j => j.hash === hash)) {
     aiFailures.delete(hash); // re-request clears stale failure
     aiQueue.push({ hash, text, ollamaUrl: cleanUrl, ollamaModel, resolve: () => {} });
@@ -401,7 +401,7 @@ app.post('/ai', async (req, res) => {
   res.status(202).json({ queued: true, hash });
 });
 
-// GET /ai/:hash — poll analysis result after a queued POST /ai
+// GET /ai/:hash: poll analysis result after a queued POST /ai
 app.get('/ai/:hash', (req, res) => {
   const { hash } = req.params;
   if (aiCache.has(hash)) return res.json({ success: true, analysis: aiCache.get(hash) });
@@ -419,7 +419,7 @@ app.get('/health', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET /stats — detailed stats for dashboard
+// GET /stats: detailed stats for dashboard
 app.get('/stats', async (req, res) => {
   try {
     const todayCutoff = new Date(); todayCutoff.setHours(0,0,0,0);
@@ -441,11 +441,11 @@ app.get('/stats', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// In-memory TTL cache for /chart-data — recalculating 4 GROUP BY aggregations every 30s is wasteful
+// In-memory TTL cache for /chart-data: recalculating 4 GROUP BY aggregations every 30s is wasteful
 const _chartCache = new Map(); // key: days → { data, expiresAt }
 const CHART_CACHE_TTL = 10000; // 10s
 
-// GET /chart-data — time-series and AI breakdown for dashboard charts
+// GET /chart-data: time-series and AI breakdown for dashboard charts
 app.get('/chart-data', async (req, res) => {
   try {
     const days = parseInt(req.query.days) || 14;
@@ -578,11 +578,126 @@ async function reconcileNotionSync() {
   return { notionPages: pageIds.size, rows: rows.length, backfilled, cleared, stillUnsynced: still.n };
 }
 
-// POST /notion-reconcile — re-derive notion_page_id state from Notion
+// POST /notion-reconcile: re-derive notion_page_id state from Notion
 app.post('/notion-reconcile', async (req, res) => {
   try {
     res.json(await reconcileNotionSync());
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ---- Push unsynced rows to Notion ---------------------------------------------
+// Rows stay unsynced forever when (a) they were saved by a device without Notion
+// credentials, or (b) the page was created but the PATCH /notion-page-id back to
+// the server was lost AND the post has no URL, so reconcile can't match it.
+// This creates the missing pages server-side. Mirrors buildProperties() in
+// background.js — keep the two in sync if the Notion schema changes.
+function buildNotionProperties(match, savedBy) {
+  const toNotionStatus = (s) => {
+    if (!s || s === 'new' || s === 'interested') return 'Not started';
+    if (s === 'ai_processed') return 'AI Processed';
+    if (s === 'applied' || s === 'interviewing') return 'In progress';
+    return 'Done';
+  };
+  const richText = (val) => {
+    if (val == null || val === false) return [];
+    const str = typeof val === 'string' ? val : String(val);
+    if (!str) return [];
+    const chunks = [];
+    for (let i = 0; i < str.length; i += 2000) chunks.push({ text: { content: str.substring(i, i + 2000) } });
+    return chunks;
+  };
+  const d = match.timestamp ? new Date(Number(match.timestamp)) : new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+  const props = {
+    Name:   { title: [{ text: { content: match.author || 'Unknown Recruiter' } }] },
+    Score:  { number: match.relevanceScore ?? 0 },
+    Status: { status: { name: toNotionStatus(match.status) } },
+    Date:   { date: { start: dateStr } },
+    Snippet: { rich_text: richText(match.fullText || match.snippet || '') },
+  };
+  if ((match.devopsKeywords || []).length > 0) props.Keywords = { rich_text: richText(match.devopsKeywords.join(', ')) };
+  if ((match.emails || []).length > 0) props.Emails = { rich_text: richText(match.emails.join(', ')) };
+  if (match.url) props.URL = { url: match.url };
+  if (savedBy) props['Saved By'] = { rich_text: richText(savedBy) };
+  const ai = match.aiAnalysis;
+  if (ai) {
+    const titles = Array.isArray(ai.jobTitles) ? ai.jobTitles.filter(Boolean) : (ai.jobTitle ? [ai.jobTitle] : []);
+    if (titles.length) props['Job Title'] = { rich_text: richText(titles.join(', ')) };
+    props['VISA'] = { rich_text: richText(ai.visaSponsorship || 'Not mentioned') };
+    if (ai.confidence !== undefined) props['AI Confidence'] = { number: ai.confidence };
+  }
+  return props;
+}
+
+// POST /notion-push-unsynced: create (or re-link) Notion pages for every row
+// with no notion_page_id. Runs reconcile first so URL-matchable rows are
+// backfilled instead of duplicated; no-URL rows are looked up by snippet text
+// before creating, which recovers pages whose PATCH-back was lost.
+let _pushUnsyncedRunning = false;
+app.post('/notion-push-unsynced', async (req, res) => {
+  const token = process.env.NOTION_TOKEN;
+  const dbId  = process.env.NOTION_DB_ID;
+  if (!token || !dbId) return res.json({ skipped: true, reason: 'NOTION_TOKEN and NOTION_DB_ID env vars required on server' });
+  if (_pushUnsyncedRunning) return res.status(409).json({ error: 'Push already running' });
+  _pushUnsyncedRunning = true;
+
+  const nHeaders = { 'Authorization': `Bearer ${token}`, 'Notion-Version': '2022-06-28', 'Content-Type': 'application/json' };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  try {
+    const rec = await reconcileNotionSync();
+    const rows = await db.all('SELECT id, url, saved_by, data FROM matches WHERE notion_page_id IS NULL ORDER BY created_at');
+    let created = 0, linked = 0, errors = 0;
+    const errorSamples = [];
+
+    for (const row of rows) {
+      try {
+        const match = JSON.parse(row.data);
+
+        // Lost-PATCH recovery: the page may already exist without a matchable
+        // URL. Look it up by the start of its snippet before creating.
+        let pageId = null;
+        const key = (match.fullText || match.snippet || '').trim().slice(0, 60);
+        if (key.length >= 20) {
+          const q = await fetch(`https://api.notion.com/v1/databases/${dbId}/query`, {
+            method: 'POST', headers: nHeaders,
+            body: JSON.stringify({ page_size: 1, filter: { property: 'Snippet', rich_text: { contains: key } } }),
+          });
+          if (q.ok) {
+            const qd = await q.json();
+            if (qd.results.length) { pageId = qd.results[0].id; linked++; }
+          }
+          await sleep(350); // Notion rate limit ~3 req/s
+        }
+
+        if (!pageId) {
+          const r2 = await fetch('https://api.notion.com/v1/pages', {
+            method: 'POST', headers: nHeaders,
+            body: JSON.stringify({ parent: { database_id: dbId }, properties: buildNotionProperties(match, row.saved_by) }),
+          });
+          const d2 = await r2.json();
+          if (!r2.ok) throw new Error(`Notion ${r2.status}: ${d2.message || ''}`);
+          pageId = d2.id;
+          created++;
+          await sleep(350);
+        }
+
+        await db.run('UPDATE matches SET notion_page_id = ?, updated_at = ? WHERE id = ?', [pageId, Date.now(), row.id]);
+      } catch (e) {
+        errors++;
+        if (errorSamples.length < 3) errorSamples.push(e.message);
+      }
+    }
+
+    _chartCache.clear();
+    const still = await db.get('SELECT COUNT(*) as n FROM matches WHERE notion_page_id IS NULL');
+    res.json({ backfilledByUrl: rec.backfilled, created, linked, errors, errorSamples, stillUnsynced: still.n });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    _pushUnsyncedRunning = false;
+  }
 });
 
 // Auto-reconcile shortly after startup so unsynced counts are correct even if
@@ -593,7 +708,7 @@ setTimeout(() => {
   }).catch((err) => console.error('[notion-reconcile] startup failed:', err.message));
 }, 5000);
 
-// POST /notion-dedup — find & optionally archive duplicate Notion pages by URL
+// POST /notion-dedup: find & optionally archive duplicate Notion pages by URL
 app.post('/notion-dedup', async (req, res) => {
   const token  = process.env.NOTION_TOKEN;
   const dbId   = process.env.NOTION_DB_ID;
@@ -651,7 +766,7 @@ app.post('/notion-dedup', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET /notion-schema — inspect Notion DB property names and types
+// GET /notion-schema: inspect Notion DB property names and types
 app.get('/notion-schema', async (req, res) => {
   const token = process.env.NOTION_TOKEN;
   const dbId  = process.env.NOTION_DB_ID;
@@ -744,7 +859,7 @@ function notionParseCsv(text) {
   return body.map(r => Object.fromEntries(header.map((h, i) => [h, r[i] ?? ''])));
 }
 
-// GET /notion-export — download all Notion DB pages as CSV (includes page_id for round-trip)
+// GET /notion-export: download all Notion DB pages as CSV (includes page_id for round-trip)
 app.get('/notion-export', async (req, res) => {
   const token = process.env.NOTION_TOKEN;
   const dbId  = process.env.NOTION_DB_ID;
@@ -778,7 +893,7 @@ app.get('/notion-export', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST /notion-import — patch Notion pages from a processed CSV (must include page_id column)
+// POST /notion-import: patch Notion pages from a processed CSV (must include page_id column)
 // body: { csv: string }, ?dry=true (default) previews changes, ?dry=false applies them
 app.post('/notion-import', async (req, res) => {
   const token  = process.env.NOTION_TOKEN;
@@ -831,14 +946,14 @@ app.post('/notion-import', async (req, res) => {
 // Cancel flag for notion-fill-ai background job
 let _fillAICancelled = false;
 
-// POST /notion-fill-ai/cancel — signal the running fill job to stop
+// POST /notion-fill-ai/cancel: signal the running fill job to stop
 app.post('/notion-fill-ai/cancel', (req, res) => {
   _fillAICancelled = true;
   broadcast({ action: 'notionFillCancelled' });
   res.json({ ok: true });
 });
 
-// POST /notion-fill-ai — find Notion pages missing AI Role, run Ollama, update Notion
+// POST /notion-fill-ai: find Notion pages missing AI Role, run Ollama, update Notion
 // ?dry=true (default) → count only; ?dry=false → enqueue and process
 app.post('/notion-fill-ai', async (req, res) => {
   const token       = process.env.NOTION_TOKEN;
@@ -905,7 +1020,7 @@ app.post('/notion-fill-ai', async (req, res) => {
 
     await ensureAIRoleProperty();
 
-    // Reset cancel flag and respond immediately — processing in background
+    // Reset cancel flag and respond immediately: processing in background
     _fillAICancelled = false;
     res.json({ total: pages.length, missingAIRole: missing.length, enqueuing: true });
 
@@ -963,7 +1078,7 @@ app.post('/notion-fill-ai', async (req, res) => {
         ).catch(() => {});
       }
 
-      // Build Notion properties — only AI-related fields
+      // Build Notion properties: only AI-related fields
       const notionProps = {
         [aiRoleProp]: { rich_text: [{ text: { content: roleText } }] },
       };
@@ -991,7 +1106,7 @@ app.post('/notion-fill-ai', async (req, res) => {
   }
 });
 
-// GET /dashboard — real-time web dashboard
+// GET /dashboard: real-time web dashboard
 app.get('/dashboard', (req, res) => {
   res.setHeader('Content-Type', 'text/html');
   res.send(DASHBOARD_HTML(PORT));
@@ -1004,7 +1119,7 @@ function DASHBOARD_HTML(port) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DevOps Scanner — Server Dashboard</title>
+<title>DevOps Scanner - Server Dashboard</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
@@ -1159,7 +1274,7 @@ header h1{font-size:18px;font-weight:700;color:#f8fafc}
         <button class="range-tab" data-days="30">30d</button>
       </div>
     </div>
-    <div id="chart-jobs-empty" class="chart-empty" style="display:none">No data yet — start scanning on LinkedIn</div>
+    <div id="chart-jobs-empty" class="chart-empty" style="display:none">No data yet. Start scanning on LinkedIn</div>
     <div class="chart-wrap" style="padding:16px"><canvas id="chart-jobs"></canvas></div>
   </div>
   <div class="panel">
@@ -1187,6 +1302,7 @@ header h1{font-size:18px;font-weight:700;color:#f8fafc}
         <button class="btn btn-ghost" id="btn-dry-run" onclick="runDedup(true)">Preview Duplicates</button>
         <button class="btn btn-danger" id="btn-run" onclick="runDedup(false)" disabled>Remove Duplicates</button>
         <button class="btn btn-ghost" id="btn-reconcile" onclick="runReconcile()">Reconcile Sync Status</button>
+        <button class="btn btn-ghost" id="btn-push-unsynced" onclick="runPushUnsynced()">Push Unsynced to Notion</button>
         <span class="dedup-status" id="dedup-status">Set NOTION_TOKEN + NOTION_DB_ID env vars on server, then preview first.</span>
       </div>
       <div class="tool-status-box" id="dedup-status-box"></div>
@@ -1303,7 +1419,7 @@ function loadStats() {
     if (!serverStartMs) serverStartMs = Date.now() - d.uptime * 1000;
     uptimeEl.title = 'Server started: ' + new Date(serverStartMs).toLocaleString();
 
-    // Users — last seen + Notion sync status
+    // Users: last seen + Notion sync status
     const ul = document.getElementById('users-list');
     if (!d.byUser || d.byUser.length === 0) {
       ul.innerHTML = '<span style="font-size:12px;color:#475569">No saves yet</span>';
@@ -1380,7 +1496,7 @@ function connectWS() {
     if (msg.action === 'newMatch') {
       const by = msg.savedBy ? ' by <b>'+esc(msg.savedBy)+'</b>' : '';
       const urlShort = msg.url ? msg.url.replace('https://www.linkedin.com/','…/') : 'unknown';
-      addFeedItem('SAVE', 'tag-save', 'New match'+by+' — <span style="color:#475569">'+esc(urlShort)+'</span>', ts);
+      addFeedItem('SAVE', 'tag-save', 'New match'+by+': <span style="color:#475569">'+esc(urlShort)+'</span>', ts);
     } else if (msg.action === 'aiStart') {
       aiQueueTotal = Math.max(aiQueueTotal, msg.queueDepth + 1);
       addFeedItem('AI', 'tag-ai', 'Ollama started (queue: '+msg.queueDepth+')', ts);
@@ -1393,13 +1509,13 @@ function connectWS() {
       addFeedItem('ERR', 'tag-err', 'AI error: '+esc(msg.error), ts);
       if (!ts) { document.getElementById('s-active').textContent = 'idle'; setAIProgress(0, false); }
     } else if (msg.action === 'notionFillStart') {
-      addFeedItem('FILL', 'tag-ai', 'Notion fill-AI started — '+msg.total+' pages to process', ts);
+      addFeedItem('FILL', 'tag-ai', 'Notion fill-AI started: '+msg.total+' pages to process', ts);
       if (!ts) { const s = document.getElementById('btn-fill-stop'); if (s) { s.disabled = false; s.textContent = 'Stop'; } }
     } else if (msg.action === 'notionFillProgress' && !ts) {
       const done = msg.processed + msg.skipped + msg.errors;
       const pct  = msg.total ? Math.round((done / msg.total) * 100) : 0;
       setToolStatus('fill-status-box', 'running',
-        'Processing ' + done + ' / ' + msg.total + ' — ' +
+        'Processing ' + done + ' / ' + msg.total + ': ' +
         '<span style="color:#86efac">' + msg.processed + ' updated</span> · ' +
         '<span style="color:#94a3b8">' + msg.skipped + ' skipped</span>' +
         (msg.errors ? ' · <span style="color:#fca5a5">' + msg.errors + ' errors</span>' : '')
@@ -1412,10 +1528,10 @@ function connectWS() {
     } else if (msg.action === 'notionFillComplete') {
       const label = msg.cancelled ? '⏹ Stopped' : '✓ Done';
       addFeedItem('FILL', msg.cancelled ? 'tag-err' : 'tag-save',
-        'Notion fill-AI ' + (msg.cancelled ? 'stopped' : 'done') + ' — '+msg.processed+' updated, '+msg.skipped+' skipped, '+msg.errors+' errors', ts);
+        'Notion fill-AI ' + (msg.cancelled ? 'stopped' : 'done') + ': '+msg.processed+' updated, '+msg.skipped+' skipped, '+msg.errors+' errors', ts);
       if (!ts) {
         setToolStatus('fill-status-box', msg.cancelled ? 'error' : (msg.errors > 0 ? 'running' : 'success'),
-          label + ' — <b>' + msg.processed + '</b> updated, ' + msg.skipped + ' skipped' +
+          label + ': <b>' + msg.processed + '</b> updated, ' + msg.skipped + ' skipped' +
           (msg.errors ? ', <span style="color:#fca5a5">' + msg.errors + ' errors</span>' : '')
         );
         const prog = document.getElementById('fill-progress'); if (prog) prog.style.display = 'none';
@@ -1521,7 +1637,7 @@ function renderSources(rows) {
       ? new Date(r.lastSaved).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
       : '—';
     const meta = quiet
-      ? 'last save ' + last + ' <span class="src-pill">⚠ empty — 0 in 14d</span>'
+      ? 'last save ' + last + ' <span class="src-pill">⚠ empty: 0 in 14d</span>'
       : r.last7 + ' in last 7d · last save ' + last;
     return '<div class="src-row' + (quiet ? ' quiet' : '') + '">'
       + '<div class="src-name">' + name + '<div class="src-meta">' + meta + '</div></div>'
@@ -1531,7 +1647,7 @@ function renderSources(rows) {
   }).join('');
 }
 
-// Date range tabs — both chart panels
+// Date range tabs: both chart panels
 document.querySelectorAll('.range-tab').forEach(tab => {
   tab.addEventListener('click', () => {
     const days = parseInt(tab.dataset.days);
@@ -1575,12 +1691,37 @@ async function runReconcile() {
       setToolStatus('dedup-status-box', 'error', esc(d.reason));
     } else {
       setToolStatus('dedup-status-box', 'success',
-        '✓ Reconciled against ' + d.notionPages + ' Notion pages — <b>' + d.backfilled + '</b> backfilled, <b>' + d.cleared + '</b> cleared (deleted in Notion), ' + d.stillUnsynced + ' of ' + d.rows + ' rows still unsynced');
+        '✓ Reconciled against ' + d.notionPages + ' Notion pages: <b>' + d.backfilled + '</b> backfilled, <b>' + d.cleared + '</b> cleared (deleted in Notion), ' + d.stillUnsynced + ' of ' + d.rows + ' rows still unsynced');
       loadStats();
       loadCharts();
     }
   } catch (e) {
     setToolStatus('dedup-status-box', 'error', 'Reconcile failed: ' + esc(e.message));
+  }
+  btn.disabled = false;
+}
+
+// ---- Push unsynced rows to Notion ---------------------------------------------
+async function runPushUnsynced() {
+  const btn = document.getElementById('btn-push-unsynced');
+  btn.disabled = true;
+  setToolStatus('dedup-status-box', 'running', 'Pushing unsynced matches to Notion (rate-limited, can take a few minutes)…');
+  try {
+    const r = await fetch('/notion-push-unsynced', { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
+    if (d.skipped) {
+      setToolStatus('dedup-status-box', 'error', esc(d.reason));
+    } else {
+      var msg = '✓ Push done: <b>' + d.created + '</b> pages created, <b>' + d.linked + '</b> re-linked by snippet, ' +
+        d.backfilledByUrl + ' backfilled by URL, ' + d.errors + ' errors, ' + d.stillUnsynced + ' still unsynced';
+      if (d.errorSamples && d.errorSamples.length) msg += '<br><span style="color:#fca5a5">' + esc(d.errorSamples.join(' | ')) + '</span>';
+      setToolStatus('dedup-status-box', d.errors ? 'error' : 'success', msg);
+      loadStats();
+      loadCharts();
+    }
+  } catch (e) {
+    setToolStatus('dedup-status-box', 'error', 'Push failed: ' + esc(e.message));
   }
   btn.disabled = false;
 }
@@ -1597,7 +1738,7 @@ async function loadNotionSchema() {
     const r = await fetch('/notion-schema');
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || r.status);
-    statusEl.textContent = 'DB: ' + (d.databaseTitle || 'Untitled') + ' — ' + d.properties.length + ' properties found. Set the correct names above.';
+    statusEl.textContent = 'DB: ' + (d.databaseTitle || 'Untitled') + ', ' + d.properties.length + ' properties found. Set the correct names above.';
     resultsEl.style.display = 'block';
     resultsEl.innerHTML = '<table><tr><th>Property Name</th><th>Type</th></tr>'
       + d.properties.map(p => '<tr><td style="color:#e2e8f0">' + esc(p.name) + '</td><td style="color:#64748b">' + esc(p.type) + '</td></tr>').join('')
@@ -1660,7 +1801,7 @@ async function runFillAI(dry) {
         + '<tr><td style="color:#22c55e">Already filled</td><td style="color:#22c55e">' + (d.total - d.missingAIRole) + '</td></tr>'
         + '</table>';
     } else {
-      // Processing happens in background — status updates come via WebSocket
+      // Processing happens in background: status updates come via WebSocket
       const prog = document.getElementById('fill-progress');
       const fill = document.getElementById('fill-progress-fill');
       if (prog) { prog.style.display = 'block'; fill.style.width = '0%'; }
@@ -1697,7 +1838,7 @@ async function runDedup(dry) {
     if (dry) {
       dedupPreviewData = d;
       if (d.duplicateGroups === 0) {
-        setToolStatus('dedup-status-box', 'success', '✓ No duplicates found — ' + d.totalPages + ' pages scanned.');
+        setToolStatus('dedup-status-box', 'success', '✓ No duplicates found. ' + d.totalPages + ' pages scanned.');
       } else {
         setToolStatus('dedup-status-box', 'running', 'Found <b>' + d.duplicateGroups + '</b> duplicate group(s), <b>' + d.pagesRemoved + '</b> pages to remove. Review below, then click Remove.');
         btnRun.disabled = false;

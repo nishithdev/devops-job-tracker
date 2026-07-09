@@ -5,7 +5,7 @@
 //   npm run fixtures
 // and is gitignored (contains raw post text). If it's missing, this suite skips.
 //
-// A failure here means a code change altered classification of a real post —
+// A failure here means a code change altered classification of a real post;
 // inspect the diff; if intentional, rerun `npm run fixtures` to re-pin.
 import { describe, it, expect } from 'vitest';
 import { createRequire } from 'module';

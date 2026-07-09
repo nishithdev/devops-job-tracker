@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * notion-export.js — export a Notion database to CSV for downstream processing.
+ * notion-export.js: export a Notion database to CSV for downstream processing.
  *
  * Usage:
  *   NOTION_TOKEN=secret_xxx NOTION_DB_ID=yyy node scripts/notion-export.js [--out=jobs.csv]

@@ -24,7 +24,7 @@ function getPostText(postEl) {
   return parts.join("\n");
 }
 
-// Returns only the post author's body text — no fallback to full element so
+// Returns only the post author's body text: no fallback to full element so
 // comments and replies are never included. Used for email extraction.
 function getPostBodyOnly(postEl) {
   const bodySelectors = [

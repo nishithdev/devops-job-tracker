@@ -1,5 +1,5 @@
 // LinkedIn DevOps Scanner - Classifier V2 (pure, testable)
-// Contextual, sentence-level, negation-aware scoring. No DOM, no chrome.* —
+// Contextual, sentence-level, negation-aware scoring. No DOM, no chrome.*;
 // content.js wraps this with live keyword lists and post body text.
 // Loaded as a plain content script before content.js (see manifest.json) and
 // importable from Node for unit tests (module.exports guard at the bottom).
@@ -47,7 +47,7 @@ const V2_COMPANY_CONTEXT = [
 // Score bonus per context type when a devops keyword is found in a sentence
 const V2_CONTEXT_SCORE = { hiring: 28, requirements: 22, neutral: 10, company: 3 };
 
-// Local regex cache — separate from content.js's highlight cache
+// Local regex cache: separate from content.js's highlight cache
 const v2RegexCache = new Map();
 
 function v2WordBoundaryRegex(keyword) {
@@ -90,7 +90,7 @@ function v2IsNegated(sentence, pos) {
 
 // classifyV2Core(text, lists, opts)
 //   lists: { devopsKeywords, hiringSignals, invalidKeywords }
-//   opts.bodyText: post body without header/comments — used only for the email
+//   opts.bodyText: post body without header/comments, used only for the email
 //     structural bonus (avoids matching emails in commenter names). Defaults to text.
 function classifyV2Core(text, lists, opts = {}) {
   if (!text || text.trim().length < 20) return { match: false };
@@ -174,7 +174,7 @@ function classifyV2Core(text, lists, opts = {}) {
     score += 4; v2signals.push('remote/hybrid +4');
   }
 
-  // --- Invalid keyword penalty (soft — doesn't hard-block) ---
+  // --- Invalid keyword penalty (soft: doesn't hard-block) ---
   const invalidHit = v2FindAny(t, invalidKeywords);
   if (invalidHit) {
     score -= 25; v2signals.push(`invalid keyword "${invalidHit}" -25`);
@@ -196,7 +196,7 @@ function classifyV2Core(text, lists, opts = {}) {
   };
 }
 
-// Node (tests) — no-op in the content-script world
+// Node (tests): no-op in the content-script world
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { classifyV2Core, v2SplitSentences, v2GetContext, v2IsNegated };
 }

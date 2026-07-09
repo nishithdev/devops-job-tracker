@@ -53,7 +53,7 @@ try {
   // Active keywords (loaded from storage or defaults from shared/keywordConfig.js)
   let DEVOPS_KEYWORDS  = [...DEFAULT_DEVOPS_KEYWORDS];
   let HIRING_SIGNALS   = [...DEFAULT_HIRING_SIGNALS];
-  let INVALID_KEYWORDS = [...DEFAULT_INVALID_KEYWORDS]; // single list — shown as "Not valid"
+  let INVALID_KEYWORDS = [...DEFAULT_INVALID_KEYWORDS]; // single list: shown as "Not valid"
   
   // Regex cache to avoid recompiling patterns on every scan
   const regexCache = new Map();
@@ -74,7 +74,7 @@ try {
   // Load custom keywords from storage (filters out disabled keywords)
   function loadCustomKeywords() {
     chrome.storage.local.get(['customKeywords'], (result) => {
-      // Code defaults always merge in (see resolveKeywords in keywordConfig.js) —
+      // Code defaults always merge in (see resolveKeywords in keywordConfig.js), so
       // a stored snapshot can never shadow keywords added to the defaults later.
       const lists = resolveKeywords(result.customKeywords);
       DEVOPS_KEYWORDS  = lists.devopsKeywords;
@@ -113,14 +113,14 @@ try {
     "div.fie-impression-container",
     "div.update-components-update-v2",
     "div.scaffold-finite-scroll__content > div",
-    // Groups search results — post cards use artdeco-card on li
+    // Groups search results: post cards use artdeco-card on li
     "li.artdeco-card",
     "li[class*='search-result']",
   ];
 
   // When we find a candidate, walk up to the nearest stable post root so
   // multiple inner-element matches collapse to one post.
-  // Listed from most-specific to least-specific — closest() stops at the first match.
+  // Listed from most-specific to least-specific: closest() stops at the first match.
   const POST_ROOT_SELECTORS = [
     // Feed layouts
     "div.feed-shared-update-v2",
@@ -130,7 +130,7 @@ try {
     "[data-urn*=':activity:']",
     "[data-urn*=':share:']",
     "[data-urn*=':ugcPost:']",
-    // Search results page — each result is an <li> with one of these markers
+    // Search results page: each result is an <li> with one of these markers
     "li.reusable-search__result-container",
     "li[data-occludable-entity-urn]",
     // Groups search results
@@ -233,7 +233,7 @@ try {
   // normalizeText (lower alias) defined in shared/utils.js
   const lower = normalizeText;
 
-  // djb2 hash — mirrors background.js hashText for textHash comparison
+  // djb2 hash: mirrors background.js hashText for textHash comparison
   const hashText = (str) => {
     let h = 5381;
     for (let i = 0; i < str.length; i++) h = ((h << 5) + h) ^ str.charCodeAt(i);
@@ -278,7 +278,7 @@ try {
     });
   }
 
-  // ---- Classifier V2 — extracted to shared/classifier.js (classifyV2Core) ---
+  // ---- Classifier V2: extracted to shared/classifier.js (classifyV2Core) ---
   // Pure scoring lives there so unit tests can replay diagnostic captures.
   // This wrapper feeds it the live keyword lists and the DOM-derived body text.
   function classifyV2(text, postEl) {
@@ -334,7 +334,7 @@ try {
 
   // getPostText, getPostBodyOnly, getPostUrl defined in shared/postHelpers.js
 
-  // Highlight styles per category — background only, no font changes
+  // Highlight styles per category: background only, no font changes
   const HIGHLIGHT_STYLES = {
     devops:   { cls: 'devops-scan-highlight--devops',   css: 'background:#fff59d;border-radius:2px;' },
     hiring:   { cls: 'devops-scan-highlight--hiring',   css: 'background:#c8e6c9;border-radius:2px;' },
@@ -358,17 +358,17 @@ try {
         if (container.hasAttribute('data-devops-highlighted')) return;
         container.setAttribute('data-devops-highlighted', 'true');
 
-        // DevOps keywords — yellow
+        // DevOps keywords: yellow
         if (info.devopsHits && info.devopsHits.length > 0)
           highlightInElement(container, info.devopsHits, HIGHLIGHT_STYLES.devops);
-        // Invalid keyword — red (runs last so it overwrites any yellow on a conflicting word)
+        // Invalid keyword: red (runs last so it overwrites any yellow on a conflicting word)
         if (info.invalidHit)
           highlightInElement(container, [info.invalidHit], HIGHLIGHT_STYLES.invalid);
       });
     });
   }
 
-  // highlightInElement — walks text nodes inside `element` and wraps each
+  // highlightInElement: walks text nodes inside `element` and wraps each
   // occurrence of any keyword in `keywords` with a <mark> styled per `style`.
   // Safe to call multiple times on the same element with different keyword sets:
   // each pass only touches bare text nodes, skipping nodes already inside <mark>.
@@ -456,7 +456,7 @@ try {
     }
     bar.appendChild(badge);
 
-    // Match counter — total unique keyword hits (devops + hiring signals)
+    // Match counter: total unique keyword hits (devops + hiring signals)
     if (!info.invalidHit) {
       const totalHits = (info.devopsHits ? info.devopsHits.length : 0) +
                         (info.hiringHits ? info.hiringHits.length : 0);
@@ -470,7 +470,7 @@ try {
     // Check for duplicates and add duplicate badge if found
     checkDuplicateAndDecorate(postEl, bar, url, text);
 
-    // Relevance score pill — only for valid hiring posts
+    // Relevance score pill: only for valid hiring posts
     if (!info.invalidHit) {
       const confidence = info.confidence ?? 0;
       const scorePill = document.createElement("span");
@@ -490,7 +490,7 @@ try {
       bar.appendChild(scorePill);
     }
 
-    // AI status tag — updated after analysis completes
+    // AI status tag: updated after analysis completes
     if (!info.invalidHit) {
       const aiTag = document.createElement('span');
       aiTag.className = 'devops-scan-ai-tag';
@@ -628,7 +628,7 @@ try {
       tag.style.background = bg;
     };
 
-    // Re-read the post text at click time — it may have expanded since decorate()
+    // Re-read the post text at click time: it may have expanded since decorate()
     const text = getPostText(postEl) || originalText;
 
     chrome.storage.local.get(['devopsSavedMatches'], (result) => {
@@ -982,18 +982,18 @@ try {
           }
           dbg('saved match:', match.id, info.devopsHits.join(', '));
 
-          // Step 1 — sync to Notion immediately so data is never lost
+          // Step 1: sync to Notion immediately so data is never lost
           chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match }, (syncResp) => {
             if (chrome.runtime.lastError) return;
             if (syncResp && syncResp.error) dbg('notion sync error:', syncResp.error);
             if (syncResp && syncResp.success && syncResp.notionPageId) {
               dbg('notion sync ok:', match.id);
-              // Cache notionPageId locally — avoids storage re-read before Step 3
+              // Cache notionPageId locally: avoids storage re-read before Step 3
               match.notionPageId = syncResp.notionPageId;
               setNotionLink(postEl, syncResp.notionPageId);
             }
 
-            // Step 2 — run AI analysis in the background, then PATCH Notion (Step 3)
+            // Step 2: run AI analysis in the background, then PATCH Notion (Step 3)
             _runAIAndSync({ matchId: match.id, text, match, postEl, useQueue: true, onDone: (matchWithAI, patchResp) => {
               if (!matchWithAI) { dbg('AI analyze skipped/error:', match.id); return; }
               dbg('AI analysis:', JSON.stringify(matchWithAI.aiAnalysis));
@@ -1667,7 +1667,7 @@ try {
     fillMissingBtn.type = 'button';
     fillMissingBtn.className = 'devops-scan-fill-missing-btn';
     fillMissingBtn.textContent = '🔍 Fill Missing';
-    fillMissingBtn.title = 'Run AI only on matches with incomplete fields (job title, visa, confidence) — never overwrites existing data';
+    fillMissingBtn.title = 'Run AI only on matches with incomplete fields (job title, visa, confidence). Never overwrites existing data';
     fillMissingBtn.style.cssText = `
       width: 100%;
       margin-top: 4px;
@@ -1733,7 +1733,7 @@ try {
       matches.forEach(match => {
         // Ensure Notion sync first (creates page if missing), then run AI if needed
         chrome.runtime.sendMessage({ action: 'syncMatchToNotion', match }, () => {
-          // Ignore lastError — Notion sync failure must not block AI analysis
+          // Ignore lastError: Notion sync failure must not block AI analysis
           void chrome.runtime.lastError;
           if (!match.aiAnalysis || match.aiAnalysis._error) {
             const text = match.fullText || match.snippet || '';
@@ -1800,7 +1800,7 @@ try {
   }
 
   function findPostRoot(el) {
-    // Step 1: Try every stable selector first — works on feed, search results,
+    // Step 1: Try every stable selector first; works on feed, search results,
     // and groups. This is the most reliable path and avoids the heuristic
     // overshooting on search results pages where multiple posts share a deep
     // common ancestor.
@@ -1811,7 +1811,7 @@ try {
 
     // Step 2: Fallback walk-up heuristic for layouts where no stable selector
     // matches (e.g. future LinkedIn redesigns). Walk up until we reach an
-    // element that sits among many siblings — that's the post list level.
+    // element that sits among many siblings: that's the post list level.
     let current = el;
     for (let i = 0; i < 12; i++) {
       if (!current.parentElement) break;
@@ -1990,7 +1990,7 @@ try {
       duplicatesFoundInSession = 0;
       dbg("Navigation: Reset duplicate counter to 0");
 
-      // Re-attach indicator and button immediately — no delay needed since
+      // Re-attach indicator and button immediately: no delay needed since
       // these are fixed-position elements appended directly to body and
       // survive LinkedIn's SPA routing. ensureIndicator() re-creates them
       // if LinkedIn happened to remove them.
@@ -2065,7 +2065,7 @@ try {
     }
 
     if (message.action === 'serverSyncQueued') {
-      // Server was offline when save fired — show pill on the matching post
+      // Server was offline when save fired: show pill on the matching post
       const POST_SELECTORS_ALL = [...POST_SELECTORS, ...POST_ROOT_SELECTORS];
       for (const sel of POST_SELECTORS_ALL) {
         document.querySelectorAll(sel).forEach((postEl) => {
@@ -2107,7 +2107,7 @@ try {
     const pill = document.createElement('span');
     pill.className = 'devops-scan-offline-pill';
     pill.textContent = '⚡ Local only';
-    pill.title = 'Server was offline — saved locally, will auto-sync when server is back.';
+    pill.title = 'Server was offline. Saved locally; will auto-sync when the server is back.';
     pill.style.cssText = 'font-size:11px;color:#92400e;background:#fef3c7;border:1px solid #f59e0b;border-radius:4px;padding:2px 6px;margin-left:6px;cursor:default;';
     bar.appendChild(pill);
   }

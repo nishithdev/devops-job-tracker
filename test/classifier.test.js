@@ -9,7 +9,7 @@ const { DEFAULT_KEYWORDS } = require('../shared/keywordConfig.js');
 
 const classify = (text, opts) => classifyV2Core(text, DEFAULT_KEYWORDS, opts);
 
-describe('classifyV2Core — matching', () => {
+describe('classifyV2Core: matching', () => {
   it('matches a clear hiring post with devops keywords', () => {
     const info = classify(
       'We are hiring a DevOps Engineer! Requirements: 5+ years of experience with Kubernetes and Terraform. Apply now or send your resume to jobs@acme.com. Fully remote.'
@@ -45,7 +45,7 @@ describe('classifyV2Core — matching', () => {
   });
 });
 
-describe('classifyV2Core — word boundaries (short keywords)', () => {
+describe('classifyV2Core: word boundaries (short keywords)', () => {
   it('does not match "sre" inside "ensure" / "insure"', () => {
     const info = classify(
       'We want to ensure quality and insure our processes are solid across teams. Looking for great people.'
@@ -71,7 +71,7 @@ describe('classifyV2Core — word boundaries (short keywords)', () => {
   });
 });
 
-describe('classifyV2Core — negation', () => {
+describe('classifyV2Core: negation', () => {
   it('penalizes negated keywords instead of scoring them', () => {
     const info = classify(
       'We are not looking for devops folks right now, and no kubernetes experience is needed here.'
@@ -88,7 +88,7 @@ describe('classifyV2Core — negation', () => {
   });
 });
 
-describe('classifyV2Core — invalid keywords', () => {
+describe('classifyV2Core: invalid keywords', () => {
   it('applies -25 soft penalty, can flip match to skip', () => {
     const base =
       'Hiring DevOps Engineer, kubernetes required. Apply now, send your resume.';
@@ -109,7 +109,7 @@ describe('classifyV2Core — invalid keywords', () => {
   });
 });
 
-describe('classifyV2Core — structural signals', () => {
+describe('classifyV2Core: structural signals', () => {
   it('scores years-of-exp, salary, email, apply, bullets, remote', () => {
     const text = [
       'We are hiring a Platform Engineer.',
@@ -150,7 +150,7 @@ describe('classifyV2Core — structural signals', () => {
   });
 });
 
-describe('classifyV2Core — context buckets', () => {
+describe('classifyV2Core: context buckets', () => {
   it('hiring context scores higher than company-brag context', () => {
     const hiring = classify(
       'We are hiring and looking for kubernetes experts to join our team right away this week.'

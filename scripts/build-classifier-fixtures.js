@@ -4,7 +4,7 @@
 //   node scripts/build-classifier-fixtures.js
 //
 // Reads server/diagnostics/posts.jsonl, dedupes posts (keeps the longest text
-// per post — "see more" expansions re-capture the same post), scores each with
+// per post: "see more" expansions re-capture the same post), scores each with
 // classifyV2Core + DEFAULT keywords, and writes the results to
 // test/fixtures/classifier-baseline.json.
 //
@@ -25,7 +25,7 @@ const outDir = path.join(root, 'test', 'fixtures');
 const out = path.join(outDir, 'classifier-baseline.json');
 
 if (!fs.existsSync(src)) {
-  console.error(`No diagnostic capture file at ${src} — enable Diagnostic Post Capture in settings and scroll LinkedIn first.`);
+  console.error(`No diagnostic capture file at ${src}. Enable Diagnostic Post Capture in settings and scroll LinkedIn first.`);
   process.exit(1);
 }
 
@@ -38,7 +38,7 @@ const records = fs.readFileSync(src, 'utf8')
   })
   .filter(r => r && typeof r.text === 'string' && r.text.trim().length >= 20);
 
-// Dedupe: same post re-captured as its text grows — key by first 120 chars,
+// Dedupe: same post re-captured as its text grows; key by first 120 chars,
 // keep the longest version.
 const byKey = new Map();
 for (const r of records) {

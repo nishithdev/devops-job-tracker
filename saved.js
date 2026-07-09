@@ -226,7 +226,7 @@ function renderAICells(match) {
     return `<td>${pending}</td><td>—</td>`;
   }
   if (ai._error === 'context_too_long') {
-    return `<td colspan="2" style="color:#e65100;font-size:11px;font-style:italic;">Unable to process — post too long</td>`;
+    return `<td colspan="2" style="color:#e65100;font-size:11px;font-style:italic;">Unable to process: post too long</td>`;
   }
 
   const titles = Array.isArray(ai.jobTitles) ? ai.jobTitles.filter(Boolean) : (ai.jobTitle ? [ai.jobTitle] : []);
@@ -403,7 +403,7 @@ function renderMatches() {
       sourceUrlHtml = `<a href="${escapeHtml(match.sourceUrl)}" target="_blank" style="color:#0a66c2;text-decoration:none;font-size:12px;" title="${escapeHtml(match.sourceUrl)}">${urlLabel} ↗</a>`;
     }
     
-    // Actions column — show stale warning if the post was detected as deleted/gone
+    // Actions column: show stale warning if the post was detected as deleted/gone
     const staleTag = match.stale
       ? `<span style="background:#fff3e0;color:#e65100;padding:2px 6px;border-radius:8px;font-size:11px;font-weight:600;margin-left:4px;" title="Post may be deleted or no longer available">⚠️ Stale</span>`
       : '';
@@ -411,7 +411,7 @@ function renderMatches() {
       ? `<a href="${escapeHtml(match.url)}" target="_blank" class="btn-open">Open ↗</a>${staleTag}`
       : '';
     
-    // Score badge — green ≥20, yellow 12-19, gray <12
+    // Score badge: green ≥20, yellow 12-19, gray <12
     const score = match.relevanceScore ?? null;
     let scoreBadge = '<span style="color:#bbb;font-size:12px;">—</span>';
     if (score !== null) {

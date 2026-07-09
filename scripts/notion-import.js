@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * notion-import.js — patch a processed CSV back into Notion pages.
+ * notion-import.js: patch a processed CSV back into Notion pages.
  *
  * Usage:
  *   NOTION_TOKEN=secret_xxx node scripts/notion-import.js --in=jobs.csv [--dry-run]
