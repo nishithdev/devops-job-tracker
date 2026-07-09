@@ -257,20 +257,31 @@ app.post('/save', async (req, res) => {
     if (!match?.id) return res.status(400).json({ error: 'missing match.id' });
     // Extension sends notionUserName or stable deviceId UUID — no IP fallback needed
     const resolvedUser = userName || null;
+    const notionPageId = match.notionPageId || null;
+    const now = Date.now();
 
     if (match.url) {
       const existing = await db.get('SELECT id, notion_page_id FROM matches WHERE url = ?', [match.url]);
       if (existing) {
-        return res.json({ duplicate: true, matchId: existing.id, notionPageId: existing.notion_page_id || null });
+        // Backfill notion_page_id when this client knows it and the row doesn't —
+        // covers a lost /notion-page-id PATCH (server was down) and a second user
+        // whose extension finished the Notion sync first.
+        if (!existing.notion_page_id && notionPageId) {
+          await db.run('UPDATE matches SET notion_page_id = ?, updated_at = ? WHERE id = ?', [notionPageId, now, existing.id]);
+        }
+        return res.json({ duplicate: true, matchId: existing.id, notionPageId: existing.notion_page_id || notionPageId });
       }
     }
 
-    const now = Date.now();
-    const notionPageId = match.notionPageId || null;
     await db.run(
       'INSERT OR IGNORE INTO matches (id, url, notion_page_id, saved_by, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [match.id, match.url || null, notionPageId, resolvedUser, JSON.stringify(match), now, now]
     );
+    // INSERT OR IGNORE keeps the old row when this id was saved before (retry
+    // of a match first saved without a notionPageId) — backfill it.
+    if (notionPageId) {
+      await db.run('UPDATE matches SET notion_page_id = ?, updated_at = ? WHERE id = ? AND notion_page_id IS NULL', [notionPageId, now, match.id]);
+    }
 
     _chartCache.clear(); // invalidate so next /chart-data fetch reflects this save
     broadcast({ action: 'newMatch', url: match.url, savedBy: resolvedUser });
@@ -442,7 +453,7 @@ app.get('/chart-data', async (req, res) => {
     if (cached && cached.expiresAt > Date.now()) return res.json(cached.data);
     const cutoff = Date.now() - days * 86400000;
 
-    const [saveRows, notionRows, aiRows, modelRows] = await Promise.all([
+    const [saveRows, notionRows, aiRows, modelRows, sourceRows] = await Promise.all([
       db.all(
         `SELECT date(created_at/1000,'unixepoch') as d, COUNT(*) as n
          FROM matches WHERE created_at >= ? GROUP BY d ORDER BY d`,
@@ -463,6 +474,24 @@ app.get('/chart-data', async (req, res) => {
       db.all(
         `SELECT model, COUNT(*) as n, AVG(tokens) as avgTokens, AVG(time_ms) as avgMs
          FROM ai_requests WHERE cached=0 AND model IS NOT NULL GROUP BY model ORDER BY n DESC`
+      ),
+      // All-time saves bucketed by source page (group id / feed / search / jobs),
+      // extracted from the sourceUrl stored inside the match JSON
+      db.all(
+        `SELECT
+           CASE
+             WHEN json_extract(data,'$.sourceUrl') LIKE '%/groups/%'
+               THEN 'group:' || CAST(substr(json_extract(data,'$.sourceUrl'), instr(json_extract(data,'$.sourceUrl'),'/groups/')+8) AS INTEGER)
+             WHEN json_extract(data,'$.sourceUrl') LIKE '%/feed%'   THEN 'feed'
+             WHEN json_extract(data,'$.sourceUrl') LIKE '%/search%' THEN 'search'
+             WHEN json_extract(data,'$.sourceUrl') LIKE '%/jobs%'   THEN 'jobs'
+             ELSE 'other'
+           END AS source,
+           COUNT(*) AS total,
+           SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS last7,
+           MAX(created_at) AS lastSaved
+         FROM matches GROUP BY source ORDER BY total DESC`,
+        [Date.now() - 7 * 86400000]
       ),
     ]);
 
@@ -489,11 +518,80 @@ app.get('/chart-data', async (req, res) => {
         avgTokens: Math.round(r.avgTokens || 0),
         avgMs: Math.round(r.avgMs || 0),
       })),
+      bySource: sourceRows,
     };
     _chartCache.set(days, { data: payload, expiresAt: Date.now() + CHART_CACHE_TTL });
     res.json(payload);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
+
+// ---- Notion sync reconciliation ----------------------------------------------
+// notion_page_id in SQLite is only as fresh as the last PATCH an extension
+// managed to deliver, so "unsynced" counts drift after a lost PATCH, a server
+// restart mid-sync, or a user without a Notion token. Reconcile re-derives the
+// state from Notion itself: backfills rows whose URL already has a page, and
+// clears IDs whose page was deleted/archived in Notion.
+async function reconcileNotionSync() {
+  const token = process.env.NOTION_TOKEN;
+  const dbId  = process.env.NOTION_DB_ID;
+  if (!token || !dbId) return { skipped: true, reason: 'NOTION_TOKEN and NOTION_DB_ID env vars required on server' };
+
+  const nHeaders = {
+    'Authorization': `Bearer ${token}`,
+    'Notion-Version': '2022-06-28',
+    'Content-Type': 'application/json',
+  };
+
+  // One paginated pass over the DB (query returns non-archived pages only)
+  const pageIds = new Set();
+  const byUrl = new Map();
+  let cursor;
+  do {
+    const body = { page_size: 100 };
+    if (cursor) body.start_cursor = cursor;
+    const r = await fetch(`https://api.notion.com/v1/databases/${dbId}/query`, { method: 'POST', headers: nHeaders, body: JSON.stringify(body) });
+    if (!r.ok) throw new Error(`Notion query ${r.status}: ${await r.text()}`);
+    const d = await r.json();
+    for (const p of d.results) {
+      pageIds.add(p.id);
+      const url = p.properties?.URL?.url;
+      if (url && !byUrl.has(url)) byUrl.set(url, p.id);
+    }
+    cursor = d.has_more ? d.next_cursor : null;
+  } while (cursor);
+
+  const rows = await db.all('SELECT id, url, notion_page_id FROM matches');
+  let backfilled = 0, cleared = 0;
+  const now = Date.now();
+  for (const row of rows) {
+    if (!row.notion_page_id && row.url && byUrl.has(row.url)) {
+      await db.run('UPDATE matches SET notion_page_id = ?, updated_at = ? WHERE id = ?', [byUrl.get(row.url), now, row.id]);
+      backfilled++;
+    } else if (row.notion_page_id && !pageIds.has(row.notion_page_id)) {
+      await db.run('UPDATE matches SET notion_page_id = NULL, updated_at = ? WHERE id = ?', [now, row.id]);
+      cleared++;
+    }
+  }
+
+  _chartCache.clear();
+  const still = await db.get('SELECT COUNT(*) as n FROM matches WHERE notion_page_id IS NULL');
+  return { notionPages: pageIds.size, rows: rows.length, backfilled, cleared, stillUnsynced: still.n };
+}
+
+// POST /notion-reconcile — re-derive notion_page_id state from Notion
+app.post('/notion-reconcile', async (req, res) => {
+  try {
+    res.json(await reconcileNotionSync());
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Auto-reconcile shortly after startup so unsynced counts are correct even if
+// PATCHes were lost while the server was down (no-op without Notion env vars).
+setTimeout(() => {
+  reconcileNotionSync().then((r) => {
+    if (!r.skipped) console.log(`[notion-reconcile] startup: ${r.backfilled} backfilled, ${r.cleared} cleared, ${r.stillUnsynced} still unsynced (${r.rows} rows, ${r.notionPages} Notion pages)`);
+  }).catch((err) => console.error('[notion-reconcile] startup failed:', err.message));
+}, 5000);
 
 // POST /notion-dedup — find & optionally archive duplicate Notion pages by URL
 app.post('/notion-dedup', async (req, res) => {
@@ -959,6 +1057,17 @@ header h1{font-size:18px;font-weight:700;color:#f8fafc}
 @media(max-width:700px){.charts{grid-template-columns:1fr}}
 .chart-wrap{position:relative;height:220px}
 .chart-empty{display:flex;align-items:center;justify-content:center;height:220px;font-size:12px;color:#475569}
+.src-list{padding:12px 16px}
+.src-row{display:grid;grid-template-columns:170px 1fr 48px;gap:12px;align-items:center;padding:7px 0;border-bottom:1px solid #0f172a}
+.src-row:last-child{border-bottom:none}
+.src-row.quiet .bar-fill{background:#f59e0b;opacity:.55}
+.src-name{font-size:13px;color:#e2e8f0;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.src-name a{color:#e2e8f0;text-decoration:none}
+.src-name a:hover{color:#60a5fa;text-decoration:underline}
+.src-meta{font-size:10px;color:#64748b;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.src-bar{height:8px}
+.src-count{font-size:13px;font-weight:700;text-align:right;color:#e2e8f0;font-variant-numeric:tabular-nums}
+.src-pill{font-size:10px;background:#451a03;color:#fbbf24;padding:1px 8px;border-radius:8px;font-weight:600}
 .feed-filters{display:flex;gap:6px;padding:8px 16px;border-bottom:1px solid #334155}
 .filter-pill{font-size:10px;padding:2px 10px;border-radius:10px;border:1px solid #334155;color:#64748b;background:none;cursor:pointer;transition:all .15s}
 .filter-pill.active{background:#334155;color:#e2e8f0;border-color:#475569}
@@ -1064,6 +1173,10 @@ header h1{font-size:18px;font-weight:700;color:#f8fafc}
     <div id="chart-ai-empty" class="chart-empty" style="display:none">No AI activity yet</div>
     <div class="chart-wrap" style="padding:16px"><canvas id="chart-ai"></canvas></div>
   </div>
+  <div class="panel" style="grid-column:1/-1">
+    <div class="panel-header">Saves by Source <span class="badge">all time · ⚠ = no saves in 14 days</span></div>
+    <div class="src-list" id="src-list"><span style="font-size:12px;color:#475569">No data yet</span></div>
+  </div>
 </div>
 
 <div class="tools-section">
@@ -1073,6 +1186,7 @@ header h1{font-size:18px;font-weight:700;color:#f8fafc}
       <div class="tools-row">
         <button class="btn btn-ghost" id="btn-dry-run" onclick="runDedup(true)">Preview Duplicates</button>
         <button class="btn btn-danger" id="btn-run" onclick="runDedup(false)" disabled>Remove Duplicates</button>
+        <button class="btn btn-ghost" id="btn-reconcile" onclick="runReconcile()">Reconcile Sync Status</button>
         <span class="dedup-status" id="dedup-status">Set NOTION_TOKEN + NOTION_DB_ID env vars on server, then preview first.</span>
       </div>
       <div class="tool-status-box" id="dedup-status-box"></div>
@@ -1377,7 +1491,44 @@ function loadCharts() {
     aiChart.data.datasets[0].data = d.analyzed;
     aiChart.data.datasets[1].data = d.cacheHits;
     aiChart.update('none');
+
+    renderSources(d.bySource);
   }).catch(() => {});
+}
+
+// ---- Saves by Source (LinkedIn groups / feed / search / jobs) -----------------
+function renderSources(rows) {
+  const el = document.getElementById('src-list');
+  if (!el) return;
+  if (!rows || rows.length === 0) {
+    el.innerHTML = '<span style="font-size:12px;color:#475569">No saves yet</span>';
+    return;
+  }
+  const max = Math.max(...rows.map(r => r.total));
+  const quietCutoff = Date.now() - 14 * 86400000;
+  el.innerHTML = rows.map(r => {
+    const gid = r.source.startsWith('group:') ? esc(r.source.slice(6)) : null;
+    const label = gid ? '👥 Group ' + gid
+      : r.source === 'feed'   ? '📰 Home Feed'
+      : r.source === 'search' ? '🔍 Search'
+      : r.source === 'jobs'   ? '💼 Jobs'
+      : 'Other pages';
+    const name = gid
+      ? '<a href="https://www.linkedin.com/groups/' + gid + '/" target="_blank">' + label + '</a>'
+      : label;
+    const quiet = r.lastSaved && r.lastSaved < quietCutoff;
+    const last = r.lastSaved
+      ? new Date(r.lastSaved).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+      : '—';
+    const meta = quiet
+      ? 'last save ' + last + ' <span class="src-pill">⚠ empty — 0 in 14d</span>'
+      : r.last7 + ' in last 7d · last save ' + last;
+    return '<div class="src-row' + (quiet ? ' quiet' : '') + '">'
+      + '<div class="src-name">' + name + '<div class="src-meta">' + meta + '</div></div>'
+      + '<div class="bar src-bar"><div class="bar-fill green" style="width:' + Math.max(1, Math.round(r.total / max * 100)) + '%"></div></div>'
+      + '<div class="src-count">' + r.total + '</div>'
+      + '</div>';
+  }).join('');
 }
 
 // Date range tabs — both chart panels
@@ -1409,6 +1560,29 @@ function setToolStatus(boxId, state, html) {
 function clearToolStatus(boxId) {
   const box = document.getElementById(boxId);
   if (box) { box.className = 'tool-status-box'; box.innerHTML = ''; }
+}
+
+// ---- Notion sync reconcile ----------------------------------------------------
+async function runReconcile() {
+  const btn = document.getElementById('btn-reconcile');
+  btn.disabled = true;
+  setToolStatus('dedup-status-box', 'running', 'Reconciling sync status against Notion…');
+  try {
+    const r = await fetch('/notion-reconcile', { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
+    if (d.skipped) {
+      setToolStatus('dedup-status-box', 'error', esc(d.reason));
+    } else {
+      setToolStatus('dedup-status-box', 'success',
+        '✓ Reconciled against ' + d.notionPages + ' Notion pages — <b>' + d.backfilled + '</b> backfilled, <b>' + d.cleared + '</b> cleared (deleted in Notion), ' + d.stillUnsynced + ' of ' + d.rows + ' rows still unsynced');
+      loadStats();
+      loadCharts();
+    }
+  } catch (e) {
+    setToolStatus('dedup-status-box', 'error', 'Reconcile failed: ' + esc(e.message));
+  }
+  btn.disabled = false;
 }
 
 // ---- Notion Dedup -----------------------------------------------------------

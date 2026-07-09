@@ -403,14 +403,19 @@ async function _syncMatchToNotion(match) {
       saveNotionStatus({ ok: true, ts: Date.now(), matchId: match.id });
       if (data.id) {
         _updateMatch(match.id, m => { m.notionPageId = data.id; });
-        // Relay notionPageId to server so other users can find it on dedup
+        // Relay notionPageId to server so other users can find it on dedup.
+        // Match by id too (url can be null). If the server is unreachable,
+        // queue a server-sync retry — /save backfills notion_page_id, so the
+        // row won't show as unsynced forever after a lost PATCH.
         chrome.storage.local.get(['localServerUrl'], (res) => {
-          if (res.localServerUrl && match.url) {
+          if (res.localServerUrl) {
             fetch(`${res.localServerUrl}/notion-page-id`, {
               method: 'PATCH',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ url: match.url, matchId: match.id, notionPageId: data.id }),
-            }).catch(() => {});
+              body: JSON.stringify({ url: match.url || null, matchId: match.id, notionPageId: data.id }),
+            }).then((r) => {
+              if (!r.ok) throw new Error(`PATCH ${r.status}`);
+            }).catch(() => _enqueueServerSync({ ...match, notionPageId: data.id }));
           }
         });
       }

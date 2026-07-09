@@ -3,3 +3,5 @@ CLAUDE.local.md
 server/node_modules/
 server/scanner.db*
 server/diagnostics/
+node_modules/
+test/fixtures/classifier-baseline.json

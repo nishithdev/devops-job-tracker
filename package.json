@@ -1,0 +1,14 @@
+{
+  "name": "devops-job-tracker",
+  "version": "2.1.0",
+  "private": true,
+  "description": "Unit tests for the LinkedIn DevOps Scanner extension (classifier + keyword resolution)",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "fixtures": "node scripts/build-classifier-fixtures.js"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.0"
+  }
+}

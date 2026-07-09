@@ -226,7 +226,6 @@ const DEFAULT_INVALID_KEYWORDS = [
   "have skilled professionals",
   "available consultants",
   "consultants available",
-  "consultants available",
   "hotlist",
   "bench",
 
@@ -294,5 +293,17 @@ function resolveKeywords(ck) {
     devopsKeywords:  resolve('devopsKeywords',  DEFAULT_DEVOPS_KEYWORDS),
     hiringSignals:   resolve('hiringSignals',   DEFAULT_HIRING_SIGNALS),
     invalidKeywords: resolve('invalidKeywords', DEFAULT_INVALID_KEYWORDS),
+  };
+}
+
+// Node (tests) — no-op in the content-script world
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    DEFAULT_DEVOPS_KEYWORDS,
+    DEFAULT_HIRING_SIGNALS,
+    DEFAULT_INVALID_KEYWORDS,
+    DEFAULT_KEYWORDS,
+    resolveKeywords,
+    extractAddedKeywords,
   };
 }

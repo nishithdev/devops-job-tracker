@@ -45,6 +45,7 @@
         "shared/utils.js",
         "shared/storageUtils.js",
         "shared/keywordConfig.js",
+        "shared/classifier.js",
         "shared/formatters.js",
         "shared/modalFactory.js",
         "shared/postHelpers.js",

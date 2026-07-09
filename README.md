@@ -4,7 +4,7 @@ A Chrome extension that scans your LinkedIn feed for DevOps job posts, scores th
 
 ---
 
-## Data Flow
+## Data flow
 
 ```mermaid
 flowchart TD
@@ -108,44 +108,44 @@ flowchart TD
 
 ## Features
 
-### Scanning & Matching
+### Scanning and matching
 - Automatically scans LinkedIn feed posts as you scroll
 - Uses a two-pass classifier (V2) with sentence-level context, negation detection, and confidence scoring
 - Highlights matched posts with a colored border and score pill
 - Shows a match counter on each post indicating how many keywords were hit
 - Dims posts you have already marked as Applied
 
-### Relevance Score
+### Relevance score
 Each matched post gets a score pill (green/yellow/red) based on confidence:
 - Considers DevOps keywords, hiring signals, and context
 - Hover over the pill to see which signals fired
 
-### Auto-Scroll
+### Auto-scroll
 - Automatically scrolls your LinkedIn feed and scans posts hands-free
 - Toggle with the popup switch or keyboard shortcut `Cmd+Shift+S` (Mac) / `Ctrl+Shift+S` (Windows)
 
-### Saved Matches
+### Saved matches
 - Save any matched post with one click
 - View all saved matches at **Saved Matches** → table with role, experience level, VISA status, keywords, and score
 - Mark posts as Applied, Interested, Interviewing, etc.
 - Stale posts (404/410) are flagged automatically every 24 hours
 
-### Gmail Draft
+### Gmail draft
 - One-click button to open a Gmail compose window pre-filled for a job post
-- Emails are extracted from the post body only (not comments)
+- Pulls emails from the post body only (not comments)
 
 ---
 
-## Notion Setup
+## Notion setup
 
 Notion sync saves every matched post to a Notion database and keeps it updated.
 
-### 1. Create a Notion Integration
+### 1. Create a Notion integration
 1. Go to [https://www.notion.so/my-integrations](https://www.notion.so/my-integrations)
 2. Click **New integration**, give it a name, select your workspace
 3. Copy the **Internal Integration Token** (starts with `secret_...`)
 
-### 2. Create a Database
+### 2. Create a database
 Create a Notion database with these properties (exact names and types):
 
 | Property | Type |
@@ -163,18 +163,18 @@ Create a Notion database with these properties (exact names and types):
 | VISA | Text |
 | AI Confidence | Number |
 
-### 3. Share the Database with Your Integration
+### 3. Share the database with your integration
 - Open the database in Notion
 - Click **...** menu → **Add connections** → select your integration
 
-### 4. Get the Database ID
+### 4. Get the database ID
 The database ID is in the URL:
 ```
 https://www.notion.so/yourworkspace/THIS-IS-THE-DATABASE-ID?v=...
 ```
 Copy the 32-character ID (with or without hyphens).
 
-### 5. Save Credentials in Extension Settings
+### 5. Save credentials in extension settings
 - Open the extension popup → **Settings**
 - Scroll to **Notion** section
 - Paste your token and database ID → **Save**
@@ -184,13 +184,13 @@ Once configured, every new saved match syncs to Notion automatically. Use **Test
 
 ---
 
-## Local AI Setup (Ollama)
+## Local AI setup (Ollama)
 
 The extension uses a local AI model via [Ollama](https://ollama.com) to extract structured fields from post text:
-- **Job Title** — the exact role being hired for
-- **Experience Level** — junior / mid / senior / lead / any
-- **VISA Sponsorship** — e.g. "H1B sponsored", "No H1B", "GC/Citizen only", "OPT/CPT accepted"
-- **AI Confidence** — 0–100 score
+- Job Title: the exact role being hired for
+- Experience Level: junior / mid / senior / lead / any
+- VISA Sponsorship: e.g. "H1B sponsored", "No H1B", "GC/Citizen only", "OPT/CPT accepted"
+- AI Confidence: a 0-100 score
 
 ### 1. Install Ollama
 
@@ -200,7 +200,7 @@ curl -fsSL https://ollama.com/install.sh | sh
 
 Or download the Mac app from [ollama.com](https://ollama.com).
 
-### 2. Pull a Model
+### 2. Pull a model
 
 Recommended (lightweight, good JSON extraction):
 ```bash
@@ -212,7 +212,7 @@ Smaller option if resources are tight:
 ollama pull qwen2.5:0.5b
 ```
 
-### 3. Start Ollama with Chrome Extension Access
+### 3. Start Ollama with Chrome extension access
 
 Chrome extensions are blocked by Ollama's CORS policy by default. Start it with:
 
@@ -229,14 +229,14 @@ kill -9 $(lsof -ti:11434)
 
 If you use the Ollama Mac menu bar app, quit it from the menu bar icon before running the command above.
 
-### 4. Configure in Extension Settings
+### 4. Configure in extension settings
 - Open the extension popup → **Settings**
 - Scroll to **Ollama** section
 - Set **URL**: `http://localhost:11434`
 - Set **Model**: `qwen2.5:3b` (or whichever model you pulled)
 - Click **Test Connection** to verify
 
-### 5. Processing Matches
+### 5. Processing matches
 
 **New matches** are analyzed automatically after being saved.
 
@@ -251,7 +251,7 @@ AI scan progress is shown in the popup widget (e.g. `🤖 AI Scanned 12 / 34`).
 
 ---
 
-## Settings Reference
+## Settings reference
 
 | Setting | Description |
 |---|---|
@@ -269,13 +269,13 @@ AI scan progress is shown in the popup widget (e.g. `🤖 AI Scanned 12 / 34`).
 - Refresh the page after installing or updating the extension
 
 **Notion sync failing with 401**
-- Your token is invalid or expired — regenerate it at notion.so/my-integrations and re-save in Settings
+- Your token is invalid or expired. Regenerate it at notion.so/my-integrations and re-save in Settings
 
 **Notion sync failing with 400**
 - Check that all database property names and types match the table above exactly
 
 **Ollama returning 403**
-- Ollama must be started with `OLLAMA_ORIGINS="chrome-extension://*"` — a plain `ollama serve` will be blocked
+- You must start Ollama with `OLLAMA_ORIGINS="chrome-extension://*"`; a plain `ollama serve` will be blocked
 
 **Ollama returning 500**
 - The model may not be pulled yet — run `ollama pull <model-name>`
