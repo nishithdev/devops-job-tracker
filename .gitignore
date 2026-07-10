@@ -6,3 +6,4 @@ server/diagnostics/
 node_modules/
 test/fixtures/classifier-baseline.json
 .agents/
+videos/
