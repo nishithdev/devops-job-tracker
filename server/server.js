@@ -92,7 +92,7 @@ app.use(express.json({ limit: '50mb' }));
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', 'Content-Type');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, OPTIONS');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });
@@ -273,14 +273,21 @@ app.post('/save', async (req, res) => {
       }
     }
 
-    await db.run(
+    const ins = await db.run(
       'INSERT OR IGNORE INTO matches (id, url, notion_page_id, saved_by, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [match.id, match.url || null, notionPageId, resolvedUser, JSON.stringify(match), now, now]
     );
-    // INSERT OR IGNORE keeps the old row when this id was saved before (retry
-    // of a match first saved without a notionPageId): backfill it.
-    if (notionPageId) {
-      await db.run('UPDATE matches SET notion_page_id = ?, updated_at = ? WHERE id = ? AND notion_page_id IS NULL', [notionPageId, now, match.id]);
+    // Ignored insert = this id was saved before (retry), or a concurrent save
+    // won the url UNIQUE race after our SELECT. Either way: treat as duplicate,
+    // backfill notion_page_id, and return the winning row's identity.
+    if (ins.changes === 0) {
+      const existing = await db.get('SELECT id, notion_page_id FROM matches WHERE id = ? OR url = ?', [match.id, match.url || null]);
+      if (existing) {
+        if (!existing.notion_page_id && notionPageId) {
+          await db.run('UPDATE matches SET notion_page_id = ?, updated_at = ? WHERE id = ?', [notionPageId, now, existing.id]);
+        }
+        return res.json({ duplicate: true, matchId: existing.id, notionPageId: existing.notion_page_id || notionPageId });
+      }
     }
 
     _chartCache.clear(); // invalidate so next /chart-data fetch reflects this save
@@ -335,10 +342,13 @@ app.patch('/notion-page-id', async (req, res) => {
   try {
     const { url, matchId, notionPageId } = req.body;
     if (!notionPageId) return res.status(400).json({ error: 'missing notionPageId' });
-    await db.run(
+    const result = await db.run(
       'UPDATE matches SET notion_page_id = ?, updated_at = ? WHERE url = ? OR id = ?',
       [notionPageId, Date.now(), url || null, matchId || null]
     );
+    // 0 rows = PATCH raced ahead of the /save INSERT: 404 so the extension
+    // enqueues a server-sync retry (/save backfills notion_page_id).
+    if (result.changes === 0) return res.status(404).json({ error: 'match not found' });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -419,14 +429,32 @@ app.get('/health', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Client timezone offset (minutes behind UTC, as returned by JS getTimezoneOffset).
+// Day boundaries everywhere below are the *client's* local days, not the server's:
+// the server may run in Docker (UTC) while the user browses in another timezone.
+function parseTzOffset(q) {
+  const n = parseInt(q, 10);
+  return Number.isFinite(n) && Math.abs(n) <= 14 * 60 ? n : 0;
+}
+// Start of the client-local day containing `ts`, as a UTC epoch ms.
+function startOfClientDay(ts, tzOffsetMin) {
+  const shifted = ts - tzOffsetMin * 60000;
+  return shifted - (shifted % 86400000) + tzOffsetMin * 60000;
+}
+// YYYY-MM-DD of `ts` in the client's timezone.
+function clientDateStr(ts, tzOffsetMin) {
+  return new Date(ts - tzOffsetMin * 60000).toISOString().slice(0, 10);
+}
+
 // GET /stats: detailed stats for dashboard
 app.get('/stats', async (req, res) => {
   try {
-    const todayCutoff = new Date(); todayCutoff.setHours(0,0,0,0);
+    const tz = parseTzOffset(req.query.tz);
+    const todayCutoff = startOfClientDay(Date.now(), tz);
     const [total, notion, today, byUser] = await Promise.all([
       db.get('SELECT COUNT(*) as n FROM matches'),
       db.get('SELECT COUNT(*) as n FROM matches WHERE notion_page_id IS NOT NULL'),
-      db.get('SELECT COUNT(*) as n FROM matches WHERE created_at >= ?', [todayCutoff.getTime()]),
+      db.get('SELECT COUNT(*) as n FROM matches WHERE created_at >= ?', [todayCutoff]),
       db.all(`SELECT saved_by, COUNT(*) as n, MAX(created_at) as last_saved,
               SUM(CASE WHEN notion_page_id IS NULL THEN 1 ELSE 0 END) as unsynced
               FROM matches WHERE saved_by IS NOT NULL GROUP BY saved_by ORDER BY n DESC`),
@@ -441,31 +469,51 @@ app.get('/stats', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// DELETE /users/:savedBy: remove a user from per-user stats by clearing
+// saved_by on their rows. Matches (and their Notion pages) are kept.
+app.delete('/users/:savedBy', async (req, res) => {
+  try {
+    const r = await db.run(
+      'UPDATE matches SET saved_by = NULL, updated_at = ? WHERE saved_by = ?',
+      [Date.now(), req.params.savedBy]
+    );
+    if (r.changes === 0) return res.status(404).json({ error: 'user not found' });
+    _chartCache.clear();
+    res.json({ removed: req.params.savedBy, matches: r.changes });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // In-memory TTL cache for /chart-data: recalculating 4 GROUP BY aggregations every 30s is wasteful
-const _chartCache = new Map(); // key: days → { data, expiresAt }
+const _chartCache = new Map(); // key: `${days}:${tz}` → { data, expiresAt }
 const CHART_CACHE_TTL = 10000; // 10s
 
 // GET /chart-data: time-series and AI breakdown for dashboard charts
 app.get('/chart-data', async (req, res) => {
   try {
     const days = parseInt(req.query.days) || 14;
-    const cached = _chartCache.get(days);
+    const tz = parseTzOffset(req.query.tz);
+    const cacheKey = days + ':' + tz;
+    const cached = _chartCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) return res.json(cached.data);
-    const cutoff = Date.now() - days * 86400000;
+    // Start of the oldest labeled day (client-local), so the first bar covers a full day
+    const cutoff = startOfClientDay(Date.now(), tz) - (days - 1) * 86400000;
+    // Bucket rows by client-local day: shift epoch before date() so SQLite's
+    // UTC day boundary lands on the client's midnight
+    const dayExpr = `date((created_at - ${tz * 60000})/1000,'unixepoch')`;
 
     const [saveRows, notionRows, aiRows, perfRows, modelRows, sourceRows] = await Promise.all([
       db.all(
-        `SELECT date(created_at/1000,'unixepoch') as d, COUNT(*) as n
+        `SELECT ${dayExpr} as d, COUNT(*) as n
          FROM matches WHERE created_at >= ? GROUP BY d ORDER BY d`,
         [cutoff]
       ),
       db.all(
-        `SELECT date(created_at/1000,'unixepoch') as d, COUNT(*) as n
+        `SELECT ${dayExpr} as d, COUNT(*) as n
          FROM matches WHERE created_at >= ? AND notion_page_id IS NOT NULL GROUP BY d ORDER BY d`,
         [cutoff]
       ),
       db.all(
-        `SELECT date(created_at/1000,'unixepoch') as d,
+        `SELECT ${dayExpr} as d,
                 COUNT(*) as total,
                 SUM(cached) as hits
          FROM ai_requests WHERE created_at >= ? GROUP BY d ORDER BY d`,
@@ -502,11 +550,10 @@ app.get('/chart-data', async (req, res) => {
       ),
     ]);
 
-    // Build label array for last N days
+    // Build label array for last N client-local days
     const labels = [];
     for (let i = days - 1; i >= 0; i--) {
-      const d = new Date(Date.now() - i * 86400000);
-      labels.push(d.toISOString().slice(0, 10));
+      labels.push(clientDateStr(Date.now() - i * 86400000, tz));
     }
     const toMap = rows => Object.fromEntries(rows.map(r => [r.d, r]));
     const saveMap   = toMap(saveRows);
@@ -534,7 +581,7 @@ app.get('/chart-data', async (req, res) => {
       })),
       bySource: sourceRows,
     };
-    _chartCache.set(days, { data: payload, expiresAt: Date.now() + CHART_CACHE_TTL });
+    _chartCache.set(cacheKey, { data: payload, expiresAt: Date.now() + CHART_CACHE_TTL });
     res.json(payload);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -1180,6 +1227,7 @@ function DASHBOARD_HTML(port) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>DevOps Scanner - Server Dashboard</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231d1d1f'/%3E%3Ccircle cx='32' cy='32' r='22' fill='none' stroke='%233a3a3c' stroke-width='2'/%3E%3Ccircle cx='32' cy='32' r='12' fill='none' stroke='%233a3a3c' stroke-width='2'/%3E%3Cpath d='M32 32 L32 10 A22 22 0 0 1 51 21 Z' fill='%23007aff' opacity='.85'/%3E%3Cline x1='32' y1='32' x2='51' y2='21' stroke='%2364b5ff' stroke-width='2.5' stroke-linecap='round'/%3E%3Ccircle cx='24' cy='42' r='4' fill='%2334c759'/%3E%3Ccircle cx='32' cy='32' r='2.5' fill='%23fff'/%3E%3C/svg%3E">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,sans-serif;background:#f5f5f7;color:#1d1d1f;min-height:100vh}
@@ -1247,6 +1295,9 @@ header h1{font-size:15px;font-weight:600;color:#1d1d1f;letter-spacing:-.01em}
 .user-badge{font-size:10px;font-weight:500;padding:2px 8px;border-radius:4px;flex-shrink:0}
 .user-badge.ok{color:#34c759;background:rgba(52,199,89,.14)}
 .user-badge.warn{color:#ff9500;background:rgba(255,149,0,.14)}
+.user-badge.idle{color:#86868b;background:#f2f2f4}
+.user-remove{width:20px;height:20px;border:none;border-radius:5px;background:transparent;color:#aeaeb2;font-size:14px;line-height:1;cursor:pointer;flex-shrink:0}
+.user-remove:hover{background:rgba(255,59,48,.12);color:#ff3b30}
 .ai-bar{padding:12px 18px;display:flex;flex-direction:column;gap:9px}
 .ai-row{display:flex;align-items:center;justify-content:space-between;font-size:12px}
 .ai-row label{color:#86868b}
@@ -1481,7 +1532,10 @@ input[type=file]{font-size:11px;color:#86868b;max-width:210px}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <script>
 const WS_URL = 'ws://' + location.host + '/ws';
-const STATS_URL = '/stats';
+// Browser's UTC offset in minutes; server uses it to draw day boundaries at this
+// client's midnight (server may run in Docker/UTC)
+const TZ_OFFSET = new Date().getTimezoneOffset();
+const STATS_URL = '/stats?tz=' + TZ_OFFSET;
 let ws, feedCount = 0, serverStartMs = null;
 let activeFeedFilter = 'all';
 let chartDays = 14;
@@ -1492,6 +1546,21 @@ let reconnectTimer = null;
 // Escape user-derived values before injecting into innerHTML (userName/URLs come from clients)
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// Users with no saves for this long get an "inactive" badge + remove button
+const USER_INACTIVE_MS = 30 * 86400000; // 30 days
+
+function removeUser(name) {
+  if (!confirm('Remove "' + name + '" from the user list?\\n\\nTheir saved matches and Notion pages are kept - only the saved-by attribution is cleared. This cannot be undone.')) return;
+  fetch('/users/' + encodeURIComponent(name), { method: 'DELETE' })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) { alert('Remove failed: ' + d.error); return; }
+      addFeedItem('USER', 'tag-save', 'Removed inactive user "' + name + '" (' + d.matches + ' matches detached)');
+      loadStats();
+    })
+    .catch(() => alert('Remove failed: server unreachable'));
 }
 function fmt(ms) {
   if (ms < 1000) return ms + 'ms';
@@ -1504,7 +1573,7 @@ function fmtUptime(s) {
 function ago(ts) {
   if (!ts) return '—';
   const d = Math.floor((Date.now()-ts)/1000);
-  return d < 60 ? d+'s ago' : d < 3600 ? Math.floor(d/60)+'m ago' : Math.floor(d/3600)+'h ago';
+  return d < 60 ? d+'s ago' : d < 3600 ? Math.floor(d/60)+'m ago' : d < 86400 ? Math.floor(d/3600)+'h ago' : Math.floor(d/86400)+'d ago';
 }
 
 // ---- Feed -------------------------------------------------------------------
@@ -1559,6 +1628,7 @@ function loadStats() {
     } else {
       ul.innerHTML = d.byUser.map(u => {
         const init = esc((u.saved_by||'?').charAt(0).toUpperCase());
+        const inactive = u.last_saved && (Date.now() - u.last_saved > USER_INACTIVE_MS);
         const notionBadge = u.unsynced > 0
           ? '<span class="user-badge warn">'+u.unsynced+' unsynced</span>'
           : '<span class="user-badge ok">synced</span>';
@@ -1568,9 +1638,14 @@ function loadStats() {
           + '<div class="user-name">'+esc(u.saved_by||'Unknown')+'</div>'
           + '<div class="user-last">'+ago(u.last_saved)+' · '+u.n+' saves</div>'
           + '</div>'
+          + (inactive ? '<span class="user-badge idle">inactive</span>' : '')
           + notionBadge
+          + (inactive ? '<button class="user-remove" data-user="'+esc(u.saved_by)+'" title="Remove inactive user (their saved matches are kept)">&times;</button>' : '')
           + '</div>';
       }).join('');
+      ul.querySelectorAll('.user-remove').forEach(btn => {
+        btn.onclick = () => removeUser(btn.dataset.user);
+      });
     }
   }).catch(()=>{});
 }
@@ -1745,7 +1820,7 @@ function initCharts() {
 }
 
 function loadCharts() {
-  fetch('/chart-data?days='+chartDays).then(r => r.json()).then(d => {
+  fetch('/chart-data?days='+chartDays+'&tz='+TZ_OFFSET).then(r => r.json()).then(d => {
     const shortLabels = d.labels.map(l => l.slice(5));
 
     const jobsEmpty = d.saves.every(v => v === 0) && d.analyzed.every(v => v === 0);
@@ -2055,12 +2130,17 @@ async function runDedup(dry) {
 async function runDailySummary() {
   const btn = document.getElementById('btn-daily-summary');
   const resultsEl = document.getElementById('summary-results');
-  const dateInput = document.getElementById('summary-date').value;
+  // Default to browser-local today: server clock may be UTC (Docker) and Notion
+  // Date is written from the browser's timezone
+  const pad = n => String(n).padStart(2, '0');
+  const nowD = new Date();
+  const localToday = nowD.getFullYear() + '-' + pad(nowD.getMonth() + 1) + '-' + pad(nowD.getDate());
+  const dateInput = document.getElementById('summary-date').value || localToday;
   btn.disabled = true;
   resultsEl.style.display = 'none';
   setToolStatus('summary-status-box', 'running', "Querying Notion for today's posts…");
   try {
-    const url = '/notion-daily-summary' + (dateInput ? '?date=' + encodeURIComponent(dateInput) : '');
+    const url = '/notion-daily-summary?date=' + encodeURIComponent(dateInput);
     const r = await fetch(url);
     const d = await r.json();
     if (!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));

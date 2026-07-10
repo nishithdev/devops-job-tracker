@@ -83,45 +83,63 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === SERVER_SYNC_ALARM)  runServerSyncQueue();
 });
 
-// ---- Notion retry queue (exponential backoff, max 3 attempts) ---------------
-
-const NOTION_RETRY_DELAY = 5 * 60_000; // 5m, max 2 attempts then drop
-const NOTION_RETRY_MAX   = 2;
-
-async function _enqueueNotionRetry(matchId) {
-  const s = await chrome.storage.local.get(['notionSyncQueue']);
-  const queue = s.notionSyncQueue || [];
-  if (queue.some(e => e.matchId === matchId)) return;
-  queue.push({ matchId, attempts: 0, nextRetry: Date.now() + NOTION_RETRY_DELAY });
-  await chrome.storage.local.set({ notionSyncQueue: queue });
+// Serialized queue mutation: read-modify-write under the storage lock so
+// concurrent enqueues and the alarm runners can't clobber each other's writes.
+function _mutateQueue(key, fn) {
+  return _withStorageLock((resolve) => {
+    chrome.storage.local.get([key], (s) => {
+      chrome.storage.local.set({ [key]: fn(s[key] || []) }, resolve);
+    });
+  });
 }
 
+// ---- Notion retry queue (fixed 5m delay, max 2 attempts then drop) -----------
+
+const NOTION_RETRY_DELAY = 5 * 60_000;
+const NOTION_RETRY_MAX   = 2;
+
+function _enqueueNotionRetry(matchId) {
+  return _mutateQueue('notionSyncQueue', (queue) => {
+    if (queue.some(e => e.matchId === matchId)) return queue;
+    queue.push({ matchId, attempts: 0, nextRetry: Date.now() + NOTION_RETRY_DELAY });
+    return queue;
+  });
+}
+
+let _notionQueueRunning = false;
 async function runNotionRetryQueue() {
-  const s = await chrome.storage.local.get(['notionSyncQueue', 'devopsSavedMatches']);
-  const queue = s.notionSyncQueue || [];
-  if (!queue.length) return;
+  if (_notionQueueRunning) return;
+  _notionQueueRunning = true;
+  try {
+    const s = await chrome.storage.local.get(['notionSyncQueue', 'devopsSavedMatches']);
+    const queue = s.notionSyncQueue || [];
+    const now = Date.now();
+    const ready = queue.filter(e => e.nextRetry <= now);
+    if (!ready.length) return;
 
-  const now = Date.now();
-  const ready = queue.filter(e => e.nextRetry <= now);
-  if (!ready.length) return;
+    const matches = s.devopsSavedMatches || [];
+    const done = new Set();           // synced, skipped, or match gone: drop entry
+    const failedAttempts = new Map(); // matchId → new attempt count
 
-  const matches = s.devopsSavedMatches || [];
-  const remaining = queue.filter(e => e.nextRetry > now);
+    for (const entry of ready) {
+      const match = matches.find(m => m.id === entry.matchId);
+      if (!match) { done.add(entry.matchId); continue; }
 
-  for (const entry of ready) {
-    const match = matches.find(m => m.id === entry.matchId);
-    if (!match) continue;
+      const result = await _syncMatchToNotion(match, { fromRetryQueue: true });
+      if (result.success || result.skipped) done.add(entry.matchId);
+      else failedAttempts.set(entry.matchId, entry.attempts + 1);
+    }
 
-    const result = await _syncMatchToNotion(match);
-    if (result.success || result.skipped) continue;
-
-    entry.attempts++;
-    if (entry.attempts >= NOTION_RETRY_MAX) continue; // drop after 2 attempts
-    entry.nextRetry = now + NOTION_RETRY_DELAY;
-    remaining.push(entry);
+    // Merge into the live queue so entries enqueued during the run survive
+    await _mutateQueue('notionSyncQueue', (cur) => cur
+      .filter(e => !done.has(e.matchId))
+      .map(e => failedAttempts.has(e.matchId)
+        ? { ...e, attempts: failedAttempts.get(e.matchId), nextRetry: now + NOTION_RETRY_DELAY }
+        : e)
+      .filter(e => e.attempts < NOTION_RETRY_MAX));
+  } finally {
+    _notionQueueRunning = false;
   }
-
-  await chrome.storage.local.set({ notionSyncQueue: remaining });
 }
 
 // ---- Server sync retry queue ------------------------------------------------
@@ -129,11 +147,14 @@ async function runNotionRetryQueue() {
 const SERVER_SYNC_DELAYS = [2 * 60_000, 10 * 60_000, 30 * 60_000]; // 2m, 10m, 30m
 
 async function _enqueueServerSync(match) {
-  const s = await chrome.storage.local.get(['serverSyncQueue']);
-  const queue = s.serverSyncQueue || [];
-  if (queue.some(e => e.match.id === match.id)) return;
-  queue.push({ match, attempts: 0, nextRetry: Date.now() + SERVER_SYNC_DELAYS[0] });
-  await chrome.storage.local.set({ serverSyncQueue: queue });
+  let added = false;
+  await _mutateQueue('serverSyncQueue', (queue) => {
+    if (queue.some(e => e.match.id === match.id)) return queue;
+    added = true;
+    queue.push({ match, attempts: 0, nextRetry: Date.now() + SERVER_SYNC_DELAYS[0] });
+    return queue;
+  });
+  if (!added) return;
   console.log('[DevOps Scanner] Queued for server sync:', match.id);
   // Notify content scripts so they can show the "Local only" pill
   chrome.tabs.query({}, (tabs) => {
@@ -147,54 +168,67 @@ async function _enqueueServerSync(match) {
   });
 }
 
+let _serverQueueRunning = false;
 async function runServerSyncQueue() {
-  const s = await chrome.storage.local.get(['serverSyncQueue', 'localServerUrl', 'notionUserName', 'devopsSavedMatches']);
-  const queue = s.serverSyncQueue || [];
-  if (!queue.length || !s.localServerUrl) return;
+  if (_serverQueueRunning) return;
+  _serverQueueRunning = true;
+  try {
+    const s = await chrome.storage.local.get(['serverSyncQueue', 'localServerUrl', 'notionUserName', 'deviceId', 'devopsSavedMatches']);
+    const queue = s.serverSyncQueue || [];
+    if (!queue.length || !s.localServerUrl) return;
 
-  const now = Date.now();
-  const ready = queue.filter(e => e.nextRetry <= now);
-  if (!ready.length) return;
+    const now = Date.now();
+    const ready = queue.filter(e => e.nextRetry <= now);
+    if (!ready.length) return;
 
-  const remaining = queue.filter(e => e.nextRetry > now);
+    const savedMatches = s.devopsSavedMatches || [];
+    const done = new Set();
+    const failedAttempts = new Map(); // matchId → new attempt count
 
-  const savedMatches = s.devopsSavedMatches || [];
-  for (const entry of ready) {
-    try {
-      // Use fresh match from storage so notionPageId synced since enqueue is included
-      const fresh = savedMatches.find(m => m.id === entry.match.id);
-      const matchToSend = fresh || entry.match;
-      const r = await fetch(`${s.localServerUrl}/save`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ match: matchToSend, userName: s.notionUserName || null }),
-      });
-      if (r.ok) {
-        console.log('[DevOps Scanner] Server sync retry succeeded:', entry.match.id);
-        // Notify content scripts so they can update the "Local only" pill
-        chrome.tabs.query({}, (tabs) => {
-          for (const tab of tabs) {
-            chrome.tabs.sendMessage(tab.id, {
-              action: 'serverSyncComplete',
-              matchId: entry.match.id,
-              url: entry.match.url,
-            }).catch(() => {});
-          }
+    for (const entry of ready) {
+      try {
+        // Use fresh match from storage so notionPageId synced since enqueue is included
+        const fresh = savedMatches.find(m => m.id === entry.match.id);
+        const matchToSend = fresh || entry.match;
+        const r = await fetch(`${s.localServerUrl}/save`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          // Same identity fallback as handleSaveMatch: userName > deviceId
+          body: JSON.stringify({ match: matchToSend, userName: s.notionUserName || s.deviceId || null }),
         });
-        continue; // don't re-add to remaining
+        if (r.ok) {
+          done.add(entry.match.id);
+          console.log('[DevOps Scanner] Server sync retry succeeded:', entry.match.id);
+          // Notify content scripts so they can update the "Local only" pill
+          chrome.tabs.query({}, (tabs) => {
+            for (const tab of tabs) {
+              chrome.tabs.sendMessage(tab.id, {
+                action: 'serverSyncComplete',
+                matchId: entry.match.id,
+                url: entry.match.url,
+              }).catch(() => {});
+            }
+          });
+          continue;
+        }
+      } catch (_) {}
+
+      failedAttempts.set(entry.match.id, entry.attempts + 1);
+      if (entry.attempts + 1 >= SERVER_SYNC_DELAYS.length) {
+        console.log('[DevOps Scanner] Server sync retry exhausted, dropping:', entry.match.id);
       }
-    } catch (_) {}
-
-    entry.attempts++;
-    if (entry.attempts < SERVER_SYNC_DELAYS.length) {
-      entry.nextRetry = now + SERVER_SYNC_DELAYS[entry.attempts];
-      remaining.push(entry);
-    } else {
-      console.log('[DevOps Scanner] Server sync retry exhausted, dropping:', entry.match.id);
     }
-  }
 
-  await chrome.storage.local.set({ serverSyncQueue: remaining });
+    // Merge into the live queue so entries enqueued during the run survive
+    await _mutateQueue('serverSyncQueue', (cur) => cur
+      .filter(e => !done.has(e.match.id))
+      .map(e => failedAttempts.has(e.match.id)
+        ? { ...e, attempts: failedAttempts.get(e.match.id), nextRetry: now + (SERVER_SYNC_DELAYS[failedAttempts.get(e.match.id)] || 0) }
+        : e)
+      .filter(e => e.attempts < SERVER_SYNC_DELAYS.length));
+  } finally {
+    _serverQueueRunning = false;
+  }
 }
 
 // ---- Badge count (new matches since last popup open) ------------------------
@@ -312,7 +346,10 @@ function handleSyncMatchToNotion(message, sendResponse) {
   return true; // keep channel open for async response
 }
 
-async function _syncMatchToNotion(match) {
+// opts.fromRetryQueue: caller is runNotionRetryQueue — don't re-enqueue on
+// failure, the queue runner owns the entry's attempt bookkeeping.
+// opts.retriedAsCreate: this call is already the one-shot 404→POST retry.
+async function _syncMatchToNotion(match, opts = {}) {
   const stored = await new Promise(r =>
     chrome.storage.local.get(['notionToken', 'notionDatabaseId', 'notionUserName'], r)
   );
@@ -424,17 +461,17 @@ async function _syncMatchToNotion(match) {
 
     const errText = await r.text();
     // 404 on PATCH = page deleted in Notion: clear local ID and retry as POST
-    if (r.status === 404 && notionPageId) {
+    // (once — retriedAsCreate guards against unbounded recursion)
+    if (r.status === 404 && notionPageId && !opts.retriedAsCreate) {
       _updateMatch(match.id, m => { delete m.notionPageId; });
-      // Retry once as a fresh POST
-      return _syncMatchToNotion({ ...match, notionPageId: undefined });
+      return _syncMatchToNotion({ ...match, notionPageId: undefined }, { ...opts, retriedAsCreate: true });
     }
     saveNotionStatus({ ok: false, ts: Date.now(), error: `${r.status}: ${errText}` });
-    if (match.id) _enqueueNotionRetry(match.id);
+    if (match.id && !opts.fromRetryQueue) _enqueueNotionRetry(match.id);
     return { error: `${r.status}: ${errText}` };
   } catch (err) {
     saveNotionStatus({ ok: false, ts: Date.now(), error: err.message });
-    if (match.id) _enqueueNotionRetry(match.id);
+    if (match.id && !opts.fromRetryQueue) _enqueueNotionRetry(match.id);
     return { error: err.message };
   }
 }
@@ -622,12 +659,15 @@ function handleSaveMatch(message, sendResponse) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ match, userName }),
-          }).then(r => r.json()).then(data => {
+          }).then(r => {
+            if (!r.ok) throw new Error(`save ${r.status}`); // 5xx must hit the retry queue too
+            return r.json();
+          }).then(data => {
             if (data.duplicate && data.notionPageId) {
               // Another device already saved: pull their notionPageId into local
               _updateMatch(match.id, m => { if (!m.notionPageId) m.notionPageId = data.notionPageId; });
             }
-          }).catch(() => _enqueueServerSync(match)); // server offline: retry queue
+          }).catch(() => _enqueueServerSync(match)); // server offline/error: retry queue
         }
       });
     });
