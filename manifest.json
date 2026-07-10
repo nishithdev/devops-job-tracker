@@ -1,0 +1,60 @@
+{
+  "manifest_version": 3,
+  "name": "LinkedIn DevOps Role Scanner",
+  "version": "2.1.0",
+  "description": "Scans LinkedIn posts on the feed and search results for DevOps role openings, highlights matches, and lets you open them in a new tab.",
+  "permissions": ["storage", "unlimitedStorage", "tabs", "alarms", "notifications"],
+  "host_permissions": [
+    "https://www.linkedin.com/*",
+    "https://api.notion.com/*",
+    "http://localhost/*",
+    "http://*:3747/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "LinkedIn DevOps Scanner",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "commands": {
+    "toggle-autoscroll": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+S",
+        "mac": "Command+Shift+S"
+      },
+      "description": "Toggle auto-scroll on/off"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.linkedin.com/*"
+      ],
+      "js": [
+        "shared/utils.js",
+        "shared/storageUtils.js",
+        "shared/keywordConfig.js",
+        "shared/classifier.js",
+        "shared/formatters.js",
+        "shared/modalFactory.js",
+        "shared/postHelpers.js",
+        "shared/matchHelpers.js",
+        "tour.js",
+        "content.js"
+      ],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

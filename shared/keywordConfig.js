@@ -1,8 +1,10 @@
 // LinkedIn DevOps Scanner - Keyword Configuration
 // Single source of truth for all keyword arrays
 
-// DevOps keywords - posts must contain at least one of these
+// DevOps keywords: posts must contain at least one of these to be considered a match.
+// Includes both role/function terms and the specific technologies that appear in job posts.
 const DEFAULT_DEVOPS_KEYWORDS = [
+  // Roles & functions
   "devops",
   "dev ops",
   "sre",
@@ -12,6 +14,7 @@ const DEFAULT_DEVOPS_KEYWORDS = [
   "platform engineer",
   "platform engineering",
   "cloud engineer",
+  "cloud support engineer",
   "cloud engineering",
   "cloud architect",
   "cloud developer",
@@ -22,15 +25,130 @@ const DEFAULT_DEVOPS_KEYWORDS = [
   "aws engineer",
   "azure engineer",
   "gcp engineer",
+  "infrastructure engineer",
+  "release engineer",
+
+  // Container & orchestration
+  "docker",
   "kubernetes",
   "k8s",
   "aks",
   "eks",
   "gke",
+  "helm",
+  "openshift",
+  "rancher",
+
+  // IaC & config management
   "terraform",
+  "ansible",
+  "cloudformation",
+  "puppet",
+  "chef",
+  "saltstack",
+
+  // CI/CD & pipelines
   "ci/cd",
-  "infrastructure engineer",
-  "release engineer",
+  "jenkins",
+  "github actions",
+  "gitlab ci",
+  "circleci",
+  "travis ci",
+  "argocd",
+  "spinnaker",
+  
+
+  // Cloud providers
+  "aws",
+  "azure",
+  "gcp",
+  "google cloud",
+
+  // Observability & monitoring
+  "prometheus",
+  "grafana",
+  "datadog",
+  "splunk",
+  "elk",
+  "elasticsearch",
+  "logstash",
+  "kibana",
+  "new relic",
+  "pagerduty",
+  "monitoring",
+  "observability",
+
+  // Service mesh & networking
+  "istio",
+  "linkerd",
+  "envoy",
+  "nginx",
+  "apache",
+
+  // Scripting & languages
+  "python",
+  "bash",
+  "shell script",
+  "golang",
+  "go lang",
+  "java",
+  ".net",
+  "react.js",
+  "nodejs",
+  "node.js",
+  "powershell",
+  "power shell",
+  "lamda",
+  "rds",
+  "vnet",
+  "apim",
+  "app gateway",
+
+  // Databases & messaging
+  "mongodb",
+  "postgresql",
+  "mysql",
+  "redis",
+  "cassandra",
+  "kafka",
+  "rabbitmq",
+
+  // Source control & collaboration
+  "github",
+  "gitlab",
+  "sonarqube",
+  "veracode",
+  "sast",
+  "dast",
+  "sca",
+  "devsecops",
+  "spring boot",
+  "springboot",
+
+
+  // Linux & OS
+  "linux",
+  "ubuntu",
+  "centos",
+  "redhat",
+  "gitops",
+
+  // Secrets & service discovery
+  "vault",
+  "nomad",
+  "keyvault",
+
+  //AWS tools
+  "iam",
+  "vpc",
+  "ec2",
+  "load balancing",
+  "containerization",
+  "s3",
+  "cloudwatch",
+  "databricks",
+  "pyspark",
+  "spark",
 ];
 
 // Hiring signals - stronger match if present
@@ -59,8 +177,59 @@ const DEFAULT_HIRING_SIGNALS = [
   "we are recruiting",
 ];
 
-// Exclude keywords - posts containing these are filtered out
-const DEFAULT_EXCLUDE_KEYWORDS = [
+// Invalid keywords: posts that contain ANY of these are shown as "⚠️ Not valid"
+// and are never saved.  Covers both hard disqualifiers (citizenship/visa/no-c2c)
+// and noise/training content (bootcamps, courses) that sometimes slip through
+// with hiring signals.
+const DEFAULT_INVALID_KEYWORDS = [
+  // Citizenship / visa restrictions
+  "usc only",
+  "only usc",
+  "us citizen only",
+  "only us citizen",
+  "us citizens only",
+  "only us citizens",
+  "must be usc",
+  "must be us citizen",
+  "citizenship required",
+  "us citizenship required",
+  "no visa sponsorship",
+  "no sponsorship",
+  "no h1b",
+  "gc holders only",
+  "green card only",
+  "only green card",
+  "visa: usc",
+
+  // Contract / engagement type exclusions
+  "w2 only",
+  "w-2 only",
+  "only w2",
+  "only w-2",
+  "contract on w2",
+  "no c2c",
+  "no corp to corp",
+
+  // Not a real job post
+  "not - a - hiring post",
+  "not a hiring post",
+  "available it consultants",
+  "available on bench",
+  "candidates on the bench",
+  "don't send resumes",
+  "not for bench",
+  "available c2c consultants",
+  "market your profile",
+  "benchsales recruiters",
+  "consutalnts ready",
+  "have skilled consultants ready ",
+  "have skilled professionals",
+  "available consultants",
+  "consultants available",
+  "hotlist",
+  "bench",
+
+  // Training / courses / bootcamps
   "bootcamp",
   "boot camp",
   "online course",
@@ -84,111 +253,57 @@ const DEFAULT_EXCLUDE_KEYWORDS = [
   "coursera",
   "pluralsight",
   "linkedin learning",
-  "candidates on the bench"
-];
-
-// Invalid keywords - posts with these are marked as "Not valid"
-const DEFAULT_INVALID_KEYWORDS = [
-  "usc only",
-  "only usc",
-  "us citizen only",
-  "only us citizen",
-  "us citizens only",
-  "only us citizens",
-  "must be usc",
-  "must be us citizen",
-  "citizenship required",
-  "us citizenship required",
-  "no visa sponsorship",
-  "no sponsorship",
-  "no h1b",
-  "gc holders only",
-  "green card only",
-  "only green card",
-  "w2 only",
-  "only w2",
-  "no c2c",
-  "no corp to corp",
-  "not - a - hiring post",
-  "not a hiring post",
-  "available it consultants",
-  "available on bench",
-  "don't send resumes",
-  "visa: usc",
-];
-
-// Skills to detect and tag separately
-const DEFAULT_SKILLS = [
-  "docker",
-  "kubernetes",
-  "k8s",
-  "terraform",
-  "ansible",
-  "jenkins",
-  "github actions",
-  "gitlab ci",
-  "circleci",
-  "travis ci",
-  "aws",
-  "azure",
-  "gcp",
-  "google cloud",
-  "aks",
-  "eks",
-  "gke",
-  "python",
-  "bash",
-  "shell script",
-  "golang",
-  "go lang",
-  "java",
-  "prometheus",
-  "grafana",
-  "github",
-  "gitlab",
-  "datadog",
-  "splunk",
-  "elk",
-  "elasticsearch",
-  "logstash",
-  "kibana",
-  "new relic",
-  "pagerduty",
-  "linux",
-  "ubuntu",
-  "centos",
-  "redhat",
-  "helm",
-  "argocd",
-  "spinnaker",
-  "mongodb",
-  "postgresql",
-  "mysql",
-  "redis",
-  "cassandra",
-  "kafka",
-  "rabbitmq",
-  "nginx",
-  "apache",
-  "cloudformation",
-  "puppet",
-  "chef",
-  "saltstack",
-  "vault",
-  "consul",
-  "nomad",
-  "rancher",
-  "openshift",
-  "istio",
-  "linkerd",
-  "envoy",
 ];
 
 // Combined defaults object for easy access
 const DEFAULT_KEYWORDS = {
   devopsKeywords: DEFAULT_DEVOPS_KEYWORDS,
   hiringSignals: DEFAULT_HIRING_SIGNALS,
-  excludeKeywords: DEFAULT_EXCLUDE_KEYWORDS,
   invalidKeywords: DEFAULT_INVALID_KEYWORDS,
-  skills: DEFAULT_SKILLS
 };
+
+// ---- Keyword resolution -------------------------------------------------------
+// This file is the source of truth for default keywords: editing the arrays
+// above always reaches the runtime, even when the user has saved settings.
+// Storage (`customKeywords`) keeps only user deltas:
+//   customKeywords.added: { category: [keywords added via settings UI] }
+//   customKeywords.disabled: { category: [keywords toggled off] }
+// The legacy format stored full snapshot arrays (customKeywords.devopsKeywords
+// = entire list), which shadowed keywords added to the defaults later. Legacy
+// arrays are treated as additions-beyond-defaults so old installs migrate
+// transparently on first load.
+
+// Extract user additions from either delta or legacy-snapshot storage format
+function extractAddedKeywords(ck, category, defaults) {
+  ck = ck || {};
+  if (ck.added) return ck.added[category] || [];
+  return (ck[category] || []).filter(k => !defaults.includes(k));
+}
+
+// Effective per-category lists: (defaults ∪ added) − disabled
+function resolveKeywords(ck) {
+  ck = ck || {};
+  const disabled = ck.disabled || {};
+  const resolve = (category, defaults) => {
+    const added = extractAddedKeywords(ck, category, defaults);
+    const off = new Set(disabled[category] || []);
+    return [...new Set([...defaults, ...added])].filter(k => !off.has(k));
+  };
+  return {
+    devopsKeywords:  resolve('devopsKeywords',  DEFAULT_DEVOPS_KEYWORDS),
+    hiringSignals:   resolve('hiringSignals',   DEFAULT_HIRING_SIGNALS),
+    invalidKeywords: resolve('invalidKeywords', DEFAULT_INVALID_KEYWORDS),
+  };
+}
+
+// Node (tests): no-op in the content-script world
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    DEFAULT_DEVOPS_KEYWORDS,
+    DEFAULT_HIRING_SIGNALS,
+    DEFAULT_INVALID_KEYWORDS,
+    DEFAULT_KEYWORDS,
+    resolveKeywords,
+    extractAddedKeywords,
+  };
+}

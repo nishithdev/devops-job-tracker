@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>What's New - LinkedIn DevOps Scanner</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: linear-gradient(135deg, #2e7d32 0%, #1b5e20 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .whats-new-container {
+      max-width: 700px;
+      background: white;
+      border-radius: 16px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+      overflow: hidden;
+    }
+    .header {
+      background: linear-gradient(135deg, #2e7d32 0%, #1b5e20 100%);
+      color: white;
+      padding: 40px 50px;
+      text-align: center;
+    }
+    .header-icon {
+      font-size: 64px;
+      margin-bottom: 16px;
+    }
+    .header-title {
+      font-size: 32px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+    .header-version {
+      font-size: 16px;
+      opacity: 0.9;
+    }
+    .content {
+      padding: 40px 50px;
+    }
+    .changelog-section {
+      margin-bottom: 30px;
+    }
+    .section-title {
+      font-size: 20px;
+      font-weight: 700;
+      color: #2e7d32;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .feature-list {
+      list-style: none;
+    }
+    .feature-item {
+      display: flex;
+      align-items: start;
+      gap: 12px;
+      padding: 12px;
+      margin-bottom: 8px;
+      background: #f9f9fb;
+      border-radius: 8px;
+      border-left: 3px solid #2e7d32;
+    }
+    .feature-icon {
+      font-size: 20px;
+      flex-shrink: 0;
+    }
+    .feature-text {
+      flex: 1;
+    }
+    .feature-title {
+      font-weight: 600;
+      color: #333;
+      margin-bottom: 4px;
+    }
+    .feature-desc {
+      font-size: 14px;
+      color: #666;
+      line-height: 1.5;
+    }
+    .highlight-box {
+      background: #e8f5e9;
+      border: 2px solid #2e7d32;
+      border-radius: 8px;
+      padding: 20px;
+      margin: 24px 0;
+      text-align: center;
+    }
+    .highlight-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: #2e7d32;
+      margin-bottom: 8px;
+    }
+    .highlight-text {
+      font-size: 14px;
+      color: #555;
+      line-height: 1.6;
+    }
+    code {
+      background: #e8e8ea;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
+      font-size: 13px;
+      color: #d32f2f;
+    }
+    .actions {
+      display: flex;
+      gap: 12px;
+      padding-top: 30px;
+      border-top: 2px solid #e0e0e0;
+    }
+    .btn {
+      flex: 1;
+      padding: 14px 24px;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-decoration: none;
+      text-align: center;
+      display: block;
+    }
+    .btn-primary {
+      background: #2e7d32;
+      color: white;
+    }
+    .btn-primary:hover {
+      background: #388e3c;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(46, 125, 50, 0.4);
+    }
+    .btn-secondary {
+      background: #f5f5f5;
+      color: #333;
+    }
+    .btn-secondary:hover {
+      background: #e0e0e0;
+    }
+  </style>
+</head>
+<body>
+  <div class="whats-new-container">
+    <div class="header">
+      <div class="header-icon">🎉</div>
+      <h1 class="header-title">What's New</h1>
+      <p class="header-version">Version 2.1.0 - Stability Update</p>
+    </div>
+
+    <div class="content">
+      <div class="changelog-section">
+        <div class="section-title">
+          <span>⚙️</span>
+          <span>New Features</span>
+        </div>
+        <ul class="feature-list">
+          <li class="feature-item">
+            <div class="feature-icon">🎨</div>
+            <div class="feature-text">
+              <div class="feature-title">Customizable Keywords</div>
+              <div class="feature-desc">
+                Add your own DevOps keywords, hiring signals, and exclusions in the new Settings page.
+                No more editing code!
+              </div>
+            </div>
+          </li>
+          <li class="feature-item">
+            <div class="feature-icon">🚀</div>
+            <div class="feature-text">
+              <div class="feature-title">Enhanced Popup</div>
+              <div class="feature-desc">
+                Toggle auto-scroll directly from the popup, view recent matches, and see real-time scan status.
+                Everything you need at a glance!
+              </div>
+            </div>
+          </li>
+          <li class="feature-item">
+            <div class="feature-icon">⌨️</div>
+            <div class="feature-text">
+              <div class="feature-title">Keyboard Shortcuts</div>
+              <div class="feature-desc">
+                Press <code>Ctrl+Shift+S</code> (Mac: <code>Cmd+Shift+S</code>) to instantly toggle auto-scroll on/off.
+              </div>
+            </div>
+          </li>
+          <li class="feature-item">
+            <div class="feature-icon">📋</div>
+            <div class="feature-text">
+              <div class="feature-title">Recent Matches Preview</div>
+              <div class="feature-desc">
+                See your last 3 matches directly in the popup with quick-click access to open them.
+              </div>
+            </div>
+          </li>
+          <li class="feature-item">
+            <div class="feature-icon">🗑️</div>
+            <div class="feature-text">
+              <div class="feature-title">Clear All Matches</div>
+              <div class="feature-desc">
+                One-click button to clear your entire match archive when you want a fresh start.
+              </div>
+            </div>
+          </li>
+        </ul>
+      </div>
+
+      <div class="highlight-box">
+        <div class="highlight-title">🎓 New User? Start Here!</div>
+        <div class="highlight-text">
+          If this is your first time using the extension, check out the interactive welcome tutorial
+          to learn all the features. You can access it anytime from Settings.
+        </div>
+      </div>
+
+      <div class="changelog-section">
+        <div class="section-title">
+          <span>🔧</span>
+          <span>Improvements &amp; Bug Fixes (v2.1.0)</span>
+        </div>
+        <ul class="feature-list">
+          <li class="feature-item">
+            <div class="feature-icon">🛡️</div>
+            <div class="feature-text">
+              <div class="feature-title">Fixed: Storage Race Conditions</div>
+              <div class="feature-desc">
+                Concurrent saves from multiple tabs or devices could silently overwrite each other's Notion page IDs. All storage writes are now serialized through a mutex.
+              </div>
+            </div>
+          </li>
+          <li class="feature-item">
+            <div class="feature-icon">🔗</div>
+            <div class="feature-text">
+              <div class="feature-title">Fixed: Notion Sync Error Blocking AI</div>
+              <div class="feature-desc">
+                A Notion API error during bulk processing caused AI analysis to be skipped entirely. AI now runs regardless of Notion sync status.
+              </div>
+            </div>
+          </li>
+          <li class="feature-item">
+            <div class="feature-icon">🔒</div>
+            <div class="feature-text">
+              <div class="feature-title">Fixed: URL Save Lock Order</div>
+              <div class="feature-desc">
+                The URL write lock was released before checking for storage errors, allowing a brief race window on failed saves.
+              </div>
+            </div>
+          </li>
+          <li class="feature-item">
+            <div class="feature-icon">🧭</div>
+            <div class="feature-text">
+              <div class="feature-title">Fixed: SPA Navigation Resilience</div>
+              <div class="feature-desc">
+                LinkedIn's pushState/replaceState overrides now use try/finally so navigation detection continues even if the original call throws.
+              </div>
+            </div>
+          </li>
+          <li class="feature-item">
+            <div class="feature-icon">📊</div>
+            <div class="feature-text">
+              <div class="feature-title">Dashboard: Activity Feed Survives Refresh</div>
+              <div class="feature-desc">
+                Server now replays the last 200 events to new WebSocket connections, so the live activity feed is no longer lost on page refresh.
+              </div>
+            </div>
+          </li>
+          <li class="feature-item">
+            <div class="feature-icon">🧹</div>
+            <div class="feature-text">
+              <div class="feature-title">Dashboard: Notion Cleanup Tool</div>
+              <div class="feature-desc">
+                New panel in the server dashboard to find and remove duplicate Notion entries by URL. Dry-run preview before committing.
+              </div>
+            </div>
+          </li>
+        </ul>
+      </div>
+
+      <div class="actions">
+        <button class="btn btn-secondary" id="close-btn">Close</button>
+        <a href="settings.html" class="btn btn-primary" target="_blank">Open Settings</a>
+      </div>
+    </div>
+  </div>
+
+  <script src="whats-new.js"></script>
+</body>
+</html>

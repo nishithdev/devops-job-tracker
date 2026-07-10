@@ -1,0 +1,14 @@
+services:
+  scanner:
+    build: .
+    ports:
+      - "3747:3747"
+    volumes:
+      - scanner-data:/data
+    environment:
+      PORT: 3747
+      DB_PATH: /data/scanner.db
+    restart: unless-stopped
+
+volumes:
+  scanner-data:
