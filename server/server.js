@@ -873,6 +873,52 @@ function notionParseCsv(text) {
   return body.map(r => Object.fromEntries(header.map((h, i) => [h, r[i] ?? ''])));
 }
 
+// GET /notion-daily-summary: count today's Notion pages and flag missing fields
+app.get('/notion-daily-summary', async (req, res) => {
+  const token = process.env.NOTION_TOKEN;
+  const dbId  = process.env.NOTION_DB_ID;
+  if (!token || !dbId) return res.status(400).json({ error: 'NOTION_TOKEN and NOTION_DB_ID env vars required on server' });
+
+  const pad = (n) => String(n).padStart(2, '0');
+  const now = new Date();
+  const serverToday = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const dateParam = typeof req.query.date === 'string' ? req.query.date.trim() : '';
+  const targetDate = /^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? dateParam : serverToday;
+
+  const nHeaders = {
+    'Authorization': `Bearer ${token}`,
+    'Notion-Version': '2022-06-28',
+    'Content-Type': 'application/json',
+  };
+
+  async function fetchDayPages() {
+    const pages = []; let cursor;
+    do {
+      const body = { page_size: 100, filter: { property: 'Date', date: { equals: targetDate } } };
+      if (cursor) body.start_cursor = cursor;
+      const r = await fetch(`https://api.notion.com/v1/databases/${dbId}/query`, { method: 'POST', headers: nHeaders, body: JSON.stringify(body) });
+      if (!r.ok) throw new Error(`Notion query ${r.status}: ${await r.text()}`);
+      const d = await r.json();
+      pages.push(...d.results);
+      cursor = d.has_more ? d.next_cursor : null;
+    } while (cursor);
+    return pages;
+  }
+
+  const isEmptyRichText = (prop) => !prop?.rich_text?.length || prop.rich_text.every(t => !t.plain_text?.trim());
+
+  try {
+    const pages = await fetchDayPages();
+    let missingUrl = 0, missingJobTitle = 0, missingEmails = 0;
+    for (const p of pages) {
+      if (!p.properties?.URL?.url) missingUrl++;
+      if (isEmptyRichText(p.properties?.['Job Title'])) missingJobTitle++;
+      if (isEmptyRichText(p.properties?.Emails)) missingEmails++;
+    }
+    res.json({ date: targetDate, total: pages.length, missingUrl, missingJobTitle, missingEmails });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // GET /notion-export: download all Notion DB pages as CSV (includes page_id for round-trip)
 app.get('/notion-export', async (req, res) => {
   const token = process.env.NOTION_TOKEN;
@@ -1406,6 +1452,13 @@ input[type=file]{font-size:11px;color:#86868b;max-width:210px}
           <button class="btn btn-danger" id="btn-import-run" onclick="runNotionImport(false)" disabled>Apply</button>
         </div>
       </div>
+      <div class="tool-group">
+        <div class="tool-group-label">Daily summary</div>
+        <div class="tool-btns">
+          <input id="summary-date" class="text-input" type="date">
+          <button class="btn" id="btn-daily-summary" onclick="runDailySummary()">Check today's posts</button>
+        </div>
+      </div>
     </div>
     <div class="tools-footer">
       <span class="dedup-status" id="dedup-status"></span>
@@ -1418,6 +1471,9 @@ input[type=file]{font-size:11px;color:#86868b;max-width:210px}
       <span class="dedup-status" id="import-status"></span>
       <div class="tool-status-box" id="import-status-box"></div>
       <div class="dedup-results" id="import-results"></div>
+      <span class="dedup-status" id="summary-status"></span>
+      <div class="tool-status-box" id="summary-status-box"></div>
+      <div class="dedup-results" id="summary-results"></div>
     </div>
   </div>
 </div>
@@ -1994,6 +2050,33 @@ async function runDedup(dry) {
   }
 
   btnDry.disabled = false;
+}
+
+async function runDailySummary() {
+  const btn = document.getElementById('btn-daily-summary');
+  const resultsEl = document.getElementById('summary-results');
+  const dateInput = document.getElementById('summary-date').value;
+  btn.disabled = true;
+  resultsEl.style.display = 'none';
+  setToolStatus('summary-status-box', 'running', "Querying Notion for today's posts…");
+  try {
+    const url = '/notion-daily-summary' + (dateInput ? '?date=' + encodeURIComponent(dateInput) : '');
+    const r = await fetch(url);
+    const d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
+
+    setToolStatus('summary-status-box', 'success', '✓ ' + d.date + ': <b>' + d.total + '</b> post(s) found');
+    resultsEl.style.display = 'block';
+    resultsEl.innerHTML = '<table><tr><th>Metric</th><th>Count</th></tr>'
+      + '<tr><td>Total posts</td><td>' + d.total + '</td></tr>'
+      + '<tr><td style="color:' + (d.missingUrl ? '#ff3b30' : '#34c759') + '">Missing URL</td><td style="color:' + (d.missingUrl ? '#ff3b30' : '#34c759') + '">' + d.missingUrl + '</td></tr>'
+      + '<tr><td style="color:' + (d.missingJobTitle ? '#ff3b30' : '#34c759') + '">Missing Job Title</td><td style="color:' + (d.missingJobTitle ? '#ff3b30' : '#34c759') + '">' + d.missingJobTitle + '</td></tr>'
+      + '<tr><td style="color:' + (d.missingEmails ? '#ff3b30' : '#34c759') + '">Missing Emails</td><td style="color:' + (d.missingEmails ? '#ff3b30' : '#34c759') + '">' + d.missingEmails + '</td></tr>'
+      + '</table>';
+  } catch (e) {
+    setToolStatus('summary-status-box', 'error', '✗ ' + esc(e.message));
+  }
+  btn.disabled = false;
 }
 
 // ---- Notion Export/Import ----------------------------------------------------
