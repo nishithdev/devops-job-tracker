@@ -65,12 +65,23 @@ flowchart TD
     NR -->|layer 3| D3[Notion URL query\nstale check 24h alarm]
     OL -->|layer 4| D4[text_hash in ai_cache\nsame content never re-analyzed]
 
-    %% ── Dashboard ───────────────────────────────────────────────────────
+    %% ── Notion reconcile / push (server-side) ───────────────────────────
+    SRV -->|on startup + button| REC[reconcileNotionSync\nbackfill page ids by URL\nclear deleted pages]
+    REC -->|query all pages| NP3([api.notion.com])
+    SRV -->|dashboard button| PUSH[POST /notion-push-unsynced\nre-link by snippet or create page\nsame properties as extension]
+    PUSH --> NP3
+    PUSH --> DB
+
+    %% ── Dashboard (light theme, v3) ─────────────────────────────────────
     DB --> DASH[GET /dashboard\nLocal Server]
-    DASH --> CH1[Chart: saves vs analyzed\n14 day bar chart]
-    DASH --> CH2[Chart: AI requests vs cache hits\n14 day line chart]
-    DASH --> UL[Users panel\nsaved_by counts]
-    DASH --> FD[Live feed\nWS events]
+    DASH --> HDR[Top bar\nsynced · cached · online · uptime]
+    DASH --> TOPROW[Total matches · Users\nAI engine model + queue]
+    DASH --> CH1[Activity chart\nanalyzed vs saved vs synced\n7d / 14d / 30d tabs]
+    DASH --> CH2[AI requests vs cache hits\nline chart]
+    DASH --> CH3[Tokens per request +\nresponse time charts\nlast 100 AI runs]
+    DASH --> FD[Live feed\nWS events + 200-event replay\nALL / SAVE / AI / ERR filters]
+    DASH --> SRC[Saves by source\nfeed · groups · jobs · search]
+    DASH --> TOOLS[Notion tools\ndedup · reconcile · push unsynced\nAI role fill · CSV export/import]
 
     %% ── Multi-device ────────────────────────────────────────────────────
     DEVB([Device B\nPeer User]) -->|POST /save| SRV
@@ -86,9 +97,9 @@ flowchart TD
     classDef alert fill:#3b0a0a,stroke:#ef4444,color:#fca5a5
     classDef success fill:#0a2e1a,stroke:#22c55e,color:#86efac
 
-    class SRV,OL,DASH,DB,WS,WS2 server
+    class SRV,OL,DASH,DB,WS,WS2,REC,PUSH server
     class LC,LC2,SQ,NQ,D1,D2,D3,D4 storage
-    class LI,OLL,NP,NP2,DEVB,DEVA2 external
+    class LI,OLL,NP,NP2,NP3,DEVB,DEVA2 external
     class SD,HC,NTC decision
     class DUP,SKP alert
     class NID,SC,PIL,CAC success
@@ -133,6 +144,53 @@ Each matched post gets a score pill (green/yellow/red) based on confidence:
 ### Gmail draft
 - One-click button to open a Gmail compose window pre-filled for a job post
 - Pulls emails from the post body only (not comments)
+
+### AI re-scan
+- Every decorated post has a 🔄 button next to the AI tag
+- Forces a fresh AI analysis (bypasses all caches) and re-syncs the existing Notion page, never creating a duplicate
+
+### Diagnostic post capture
+- Settings → "Diagnostic Post Capture" records every classified post with its full score trace (`v2signals`)
+- Written to `server/diagnostics/posts.jsonl` when a server is configured, plus a 150-record ring buffer in chrome.storage
+- Used to debug misclassifications; turn it off when done
+
+---
+
+## Local server (optional)
+
+A small Express server (`server/server.js`, port 3747) coordinates multiple devices: SQLite dedup across users, a shared AI queue, WebSocket push of new matches, and a web dashboard.
+
+```bash
+cd server
+npm install
+NOTION_TOKEN=secret_... NOTION_DB_ID=... node server.js
+```
+
+The Notion env vars are optional but enable the server-side Notion tools (reconcile, push unsynced, dedup, AI role fill, CSV export/import). Point the extension at the server via Settings → Server URL. Offline saves queue in the extension and retry every 2 minutes.
+
+### Dashboard
+
+`http://localhost:3747/dashboard` — light-theme dashboard, live over WebSocket (new connections replay the last 200 events):
+
+- **Top bar**: synced / cached / online counts and server uptime
+- **Top row**: total matches, users with per-user unsynced badges, AI engine status (queue, cache, model)
+- **Left**: live feed with ALL / SAVE / AI / ERR filters, and saves by source (home feed, groups, jobs, search; quiet sources flagged after 14 days)
+- **Right**: four charts — activity (analyzed / saved / Notion synced, 7d/14d/30d), AI requests vs cache hits, and per-request tokens and response time for the last 100 AI runs
+- **Bottom**: Notion tools — duplicate cleanup, sync reconcile, push unsynced (creates or re-links pages server-side for rows that never reached Notion), AI role fill via Ollama, CSV export/import
+
+### Server endpoints
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /save` | Save a match (atomic dedup by URL) |
+| `GET /stats`, `GET /chart-data` | Dashboard data |
+| `POST /ai`, `GET /ai/:hash` | Shared AI queue with hash dedup |
+| `POST /notion-reconcile` | Re-derive Notion page ids from Notion (also runs at startup) |
+| `POST /notion-push-unsynced` | Create or re-link Notion pages for unsynced rows |
+| `POST /notion-dedup` | Find/archive duplicate Notion pages by URL |
+| `POST /notion-fill-ai` | Backfill AI fields on Notion pages via Ollama |
+| `GET /notion-export`, `POST /notion-import` | CSV round-trip |
+| `GET /diag`, `POST /diag` | Diagnostic post capture |
 
 ---
 

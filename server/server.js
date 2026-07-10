@@ -453,7 +453,7 @@ app.get('/chart-data', async (req, res) => {
     if (cached && cached.expiresAt > Date.now()) return res.json(cached.data);
     const cutoff = Date.now() - days * 86400000;
 
-    const [saveRows, notionRows, aiRows, modelRows, sourceRows] = await Promise.all([
+    const [saveRows, notionRows, aiRows, perfRows, modelRows, sourceRows] = await Promise.all([
       db.all(
         `SELECT date(created_at/1000,'unixepoch') as d, COUNT(*) as n
          FROM matches WHERE created_at >= ? GROUP BY d ORDER BY d`,
@@ -470,6 +470,13 @@ app.get('/chart-data', async (req, res) => {
                 SUM(cached) as hits
          FROM ai_requests WHERE created_at >= ? GROUP BY d ORDER BY d`,
         [cutoff]
+      ),
+      // Last 100 real Ollama runs, per request (cached hits carry no tokens/timing).
+      // Same per-request tokens/time the extension writes to Notion pages.
+      db.all(
+        `SELECT created_at, tokens, time_ms, model
+         FROM ai_requests WHERE cached = 0
+         ORDER BY created_at DESC LIMIT 100`
       ),
       db.all(
         `SELECT model, COUNT(*) as n, AVG(tokens) as avgTokens, AVG(time_ms) as avgMs
@@ -512,6 +519,13 @@ app.get('/chart-data', async (req, res) => {
       notionSynced:labels.map(d => notionMap[d]?.n || 0),
       analyzed:    labels.map(d => aiMap[d]?.total  || 0),
       cacheHits:   labels.map(d => aiMap[d]?.hits   || 0),
+      // Oldest → newest so the chart reads left to right
+      recentPerf: perfRows.reverse().map(r => ({
+        t: r.created_at,
+        tokens: r.tokens || 0,
+        secs: r.time_ms ? +(r.time_ms / 1000).toFixed(2) : 0,
+        model: r.model || '',
+      })),
       byModel: modelRows.map(r => ({
         model: r.model,
         n: r.n,
@@ -1122,223 +1136,286 @@ function DASHBOARD_HTML(port) {
 <title>DevOps Scanner - Server Dashboard</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
-header{background:#1e293b;border-bottom:1px solid #334155;padding:16px 24px;display:flex;align-items:center;gap:12px}
-header h1{font-size:18px;font-weight:700;color:#f8fafc}
-.dot{width:10px;height:10px;border-radius:50%;background:#22c55e;animation:pulse 2s infinite;flex-shrink:0}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-.dot.offline{background:#ef4444;animation:none}
-.uptime{margin-left:auto;font-size:12px;color:#64748b}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;padding:20px 24px}
-.card{background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px}
-.card-label{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
-.card-value{font-size:32px;font-weight:700;line-height:1}
-.card-value.green{color:#22c55e}
-.card-value.blue{color:#60a5fa}
-.card-value.purple{color:#a78bfa}
-.card-value.orange{color:#fb923c}
-.card-value.yellow{color:#fbbf24}
-.card-sub{font-size:11px;color:#64748b;margin-top:4px}
-.cols{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:0 24px 20px}
-@media(max-width:700px){.cols{grid-template-columns:1fr}}
-.panel{background:#1e293b;border:1px solid #334155;border-radius:10px;overflow:hidden}
-.panel-header{padding:12px 16px;border-bottom:1px solid #334155;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:space-between}
-.panel-header .badge{font-size:10px;background:#334155;color:#94a3b8;padding:2px 8px;border-radius:10px}
-.feed{height:320px;overflow-y:auto;padding:8px 0}
-.feed-item{padding:8px 16px;border-bottom:1px solid #1e293b;font-size:12px;display:flex;gap:8px;align-items:flex-start;animation:fadeIn .3s}
+body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,sans-serif;background:#f5f5f7;color:#1d1d1f;min-height:100vh}
+a{color:#007aff;text-decoration:none}
+a:hover{color:#0071e3}
+.mono{font-family:ui-monospace,'SF Mono',Menlo,monospace}
+header{background:#fff;border-bottom:1px solid #f0f0f2;padding:0 28px;height:56px;display:flex;align-items:center;gap:14px}
+header h1{font-size:15px;font-weight:600;color:#1d1d1f;letter-spacing:-.01em}
+.host-chip{font-size:11px;font-family:ui-monospace,'SF Mono',Menlo,monospace;color:#86868b;border:1px solid #e8e8ed;border-radius:4px;padding:2px 8px}
+.dot{width:8px;height:8px;border-radius:50%;background:#34c759;animation:pulse 2s infinite;flex-shrink:0}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.dot.offline{background:#ff3b30;animation:none}
+.top-stats{margin-left:auto;display:flex;align-items:baseline;gap:28px}
+.top-stat{display:flex;align-items:baseline;gap:7px}
+.top-stat b{font-size:17px;font-weight:700;font-variant-numeric:tabular-nums}
+.top-stat span{font-size:11px;color:#86868b}
+.uptime{font-size:11px;font-family:ui-monospace,'SF Mono',Menlo,monospace;color:#86868b}
+.reconnect-count{font-size:11px;color:#86868b}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:16px;padding:20px 28px;align-items:start}
+@media(max-width:1100px){.layout{grid-template-columns:1fr}}
+.col{display:flex;flex-direction:column;gap:16px;min-width:0}
+.hero-row{display:grid;grid-template-columns:200px minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:stretch}
+@media(max-width:900px){.hero-row{grid-template-columns:1fr}}
+.tools-section{padding:0 28px 20px}
+.split{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:start}
+@media(max-width:900px){.split{grid-template-columns:1fr}}
+.panel{background:#fff;border:1px solid #e8e8ed;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.04);overflow:hidden}
+.panel-header{padding:14px 18px;border-bottom:1px solid #f0f0f2;font-size:13px;font-weight:600;color:#1d1d1f;display:flex;align-items:center;justify-content:space-between;gap:10px}
+.panel-header .sub{font-size:11px;font-weight:400;color:#86868b}
+.badge{font-size:10px;background:#f5f5f7;color:#86868b;border:1px solid #e8e8ed;padding:2px 8px;border-radius:10px;font-weight:400}
+.stat-card{padding:18px;display:flex;flex-direction:column;justify-content:center;gap:4px}
+.card-label{font-size:11px;font-weight:600;color:#86868b;text-transform:uppercase;letter-spacing:.06em}
+.card-value{font-size:34px;font-weight:700;color:#1d1d1f;line-height:1;font-variant-numeric:tabular-nums}
+.card-sub{font-size:12px;color:#34c759;font-weight:500}
+.feed{height:520px;overflow-y:auto;padding:6px 0}
+.feed-item{padding:8px 18px;border-bottom:1px solid #f2f2f4;font-size:12px;display:flex;gap:10px;align-items:flex-start;animation:fadeIn .3s}
 @keyframes fadeIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
-.feed-item .ts{color:#475569;flex-shrink:0;font-size:10px;margin-top:1px;width:54px}
-.feed-item .msg{color:#cbd5e1;flex:1;line-height:1.4}
-.feed-item .tag{flex-shrink:0;font-size:10px;padding:1px 6px;border-radius:8px;font-weight:600}
-.tag-save{background:#14532d;color:#86efac}
-.tag-ai{background:#1e1b4b;color:#a5b4fc}
-.tag-cache{background:#1c1917;color:#a8a29e}
-.tag-err{background:#450a0a;color:#fca5a5}
-.tag-dup{background:#1c1917;color:#a8a29e}
-.users-list{padding:12px 16px}
-.user-row{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid #0f172a}
+.feed-item .tag{flex-shrink:0;font-size:10px;font-weight:600;letter-spacing:.05em;width:42px;margin-top:2px;font-family:ui-monospace,'SF Mono',Menlo,monospace}
+.feed-item .msg{color:#86868b;flex:1;line-height:1.45}
+.feed-item .msg b{color:#1d1d1f;font-weight:500}
+.feed-item .ts{color:#aeaeb2;flex-shrink:0;font-size:10px;margin-top:2px;font-family:ui-monospace,'SF Mono',Menlo,monospace}
+.tag-save{color:#34c759}
+.tag-ai{color:#007aff}
+.tag-cache{color:#86868b}
+.tag-err{color:#ff3b30}
+.tag-dup{color:#86868b}
+.feed-filters{display:flex;gap:4px}
+.filter-pill{font-size:10px;font-weight:600;letter-spacing:.04em;padding:2px 8px;border-radius:4px;border:1px solid #e8e8ed;color:#86868b;background:transparent;cursor:pointer;transition:all .15s}
+.filter-pill.active{background:#f5f5f7;color:#1d1d1f;border-color:#d2d2d7}
+.range-tabs{display:flex;gap:2px;background:#f5f5f7;border:1px solid #e8e8ed;border-radius:6px;padding:2px}
+.range-tab{font-size:11px;font-weight:500;padding:3px 12px;border-radius:4px;border:none;color:#86868b;background:transparent;cursor:pointer}
+.range-tab.active{background:#fff;color:#1d1d1f;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.chart-wrap{position:relative;height:170px;padding:12px 18px 6px}
+.chart-empty{display:flex;align-items:center;justify-content:center;height:170px;font-size:12px;color:#aeaeb2}
+.legend-row{display:flex;gap:18px;padding:0 18px 14px}
+.legend-item{display:flex;align-items:center;gap:6px;font-size:11px;color:#86868b}
+.legend-swatch{width:8px;height:8px;border-radius:2px;flex-shrink:0}
+.users-list{padding:8px 18px 12px}
+.user-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #f2f2f4}
 .user-row:last-child{border-bottom:none}
-.user-avatar{width:28px;height:28px;border-radius:50%;background:#334155;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#94a3b8;flex-shrink:0}
-.user-name{font-size:13px;color:#e2e8f0;flex:1}
-.user-count{font-size:12px;color:#64748b}
-.ai-bar{padding:12px 16px}
-.ai-row{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px}
-.ai-row label{color:#64748b;width:80px;flex-shrink:0}
-.bar{flex:1;background:#0f172a;border-radius:4px;height:6px;overflow:hidden}
-.bar-fill{height:100%;border-radius:4px;transition:width .4s}
-.bar-fill.green{background:#22c55e}
-.bar-fill.purple{background:#a78bfa}
-.charts{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:0 24px 24px}
-@media(max-width:700px){.charts{grid-template-columns:1fr}}
-.chart-wrap{position:relative;height:220px}
-.chart-empty{display:flex;align-items:center;justify-content:center;height:220px;font-size:12px;color:#475569}
-.src-list{padding:12px 16px}
-.src-row{display:grid;grid-template-columns:170px 1fr 48px;gap:12px;align-items:center;padding:7px 0;border-bottom:1px solid #0f172a}
+.user-avatar{width:26px;height:26px;border-radius:6px;background:#f5f5f7;border:1px solid #d2d2d7;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#86868b;flex-shrink:0}
+.user-meta{flex:1;min-width:0}
+.user-name{font-size:12px;font-weight:500;color:#1d1d1f}
+.user-last{font-size:10px;color:#86868b}
+.user-badge{font-size:10px;font-weight:500;padding:2px 8px;border-radius:4px;flex-shrink:0}
+.user-badge.ok{color:#34c759;background:rgba(52,199,89,.14)}
+.user-badge.warn{color:#ff9500;background:rgba(255,149,0,.14)}
+.ai-bar{padding:12px 18px;display:flex;flex-direction:column;gap:9px}
+.ai-row{display:flex;align-items:center;justify-content:space-between;font-size:12px}
+.ai-row label{color:#86868b}
+.ai-row .val{color:#424245;font-family:ui-monospace,'SF Mono',Menlo,monospace}
+.src-list{padding:6px 18px 12px}
+.src-row{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center;padding:10px 0;border-bottom:1px solid #f2f2f4}
 .src-row:last-child{border-bottom:none}
-.src-row.quiet .bar-fill{background:#f59e0b;opacity:.55}
-.src-name{font-size:13px;color:#e2e8f0;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.src-name a{color:#e2e8f0;text-decoration:none}
-.src-name a:hover{color:#60a5fa;text-decoration:underline}
-.src-meta{font-size:10px;color:#64748b;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.src-bar{height:8px}
-.src-count{font-size:13px;font-weight:700;text-align:right;color:#e2e8f0;font-variant-numeric:tabular-nums}
-.src-pill{font-size:10px;background:#451a03;color:#fbbf24;padding:1px 8px;border-radius:8px;font-weight:600}
-.feed-filters{display:flex;gap:6px;padding:8px 16px;border-bottom:1px solid #334155}
-.filter-pill{font-size:10px;padding:2px 10px;border-radius:10px;border:1px solid #334155;color:#64748b;background:none;cursor:pointer;transition:all .15s}
-.filter-pill.active{background:#334155;color:#e2e8f0;border-color:#475569}
-.range-tabs{display:flex;gap:4px}
-.range-tab{font-size:10px;padding:2px 8px;border-radius:6px;border:1px solid #334155;color:#64748b;background:none;cursor:pointer}
-.range-tab.active{background:#334155;color:#e2e8f0}
-.user-meta{display:flex;flex-direction:column;gap:2px;flex:1}
-.user-last{font-size:10px;color:#475569}
-.user-notion{font-size:10px}
-.notion-ok{color:#22c55e}
-.notion-warn{color:#f59e0b}
-.ai-progress{margin:8px 16px 4px;height:4px;background:#0f172a;border-radius:2px;overflow:hidden;display:none}
-.ai-progress-fill{height:100%;background:#a78bfa;border-radius:2px;transition:width .3s}
-.reconnect-count{font-size:11px;color:#64748b;margin-left:8px}
-.tools-section{padding:0 24px 24px}
-.tools-panel{background:#1e293b;border:1px solid #334155;border-radius:10px;overflow:hidden}
-.tools-body{padding:16px}
-.tools-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-.btn{font-size:12px;font-weight:600;padding:6px 16px;border-radius:6px;border:none;cursor:pointer;transition:opacity .15s}
+.src-top{display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+.src-name{font-size:12px;font-weight:500;color:#1d1d1f;white-space:nowrap}
+.src-meta{font-size:11px;color:#86868b}
+.src-bar{background:#f5f5f7;border-radius:3px;height:6px;overflow:hidden}
+.src-fill{height:100%;border-radius:3px;background:#00c7be}
+.src-row.quiet .src-fill{background:#ffd60a}
+.src-count{font-size:14px;font-weight:600;color:#1d1d1f;font-variant-numeric:tabular-nums;min-width:32px;text-align:right}
+.tools-grid{padding:16px 18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+.tool-group{display:flex;flex-direction:column;gap:8px}
+.tool-group-label{font-size:11px;font-weight:600;color:#86868b;text-transform:uppercase;letter-spacing:.06em}
+.tool-btns{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.btn{font-size:12px;font-weight:500;padding:6px 12px;border-radius:6px;border:1px solid #d2d2d7;cursor:pointer;background:#f5f5f7;color:#1d1d1f;transition:background .15s,opacity .15s}
+.btn:hover:not(:disabled){background:#e8e8ed}
 .btn:disabled{opacity:.4;cursor:default}
-.btn-ghost{background:#334155;color:#e2e8f0}
-.btn-danger{background:#dc2626;color:#fff}
-.dedup-status{font-size:12px;color:#94a3b8;flex:1}
-.dedup-results{margin-top:12px;font-size:12px;color:#94a3b8;display:none}
+.btn-danger{color:#ff3b30}
+.btn-primary{background:#af52de;border-color:#af52de;color:#fff}
+.btn-primary:hover:not(:disabled){background:#9d43cc}
+.text-input{background:#fff;border:1px solid #d2d2d7;color:#1d1d1f;padding:3px 8px;border-radius:4px;font-size:11px;width:100px}
+input[type=file]{font-size:11px;color:#86868b;max-width:210px}
+.tools-footer{padding:0 18px 14px}
+.dedup-status{font-size:11px;color:#86868b;display:block;margin-top:6px}
+.dedup-status:empty{display:none}
+.dedup-results{margin-top:10px;font-size:12px;color:#86868b;display:none}
 .dedup-results table{width:100%;border-collapse:collapse;margin-top:8px}
-.dedup-results td,.dedup-results th{padding:4px 8px;border-bottom:1px solid #334155;text-align:left}
-.dedup-results th{color:#64748b;font-size:10px;text-transform:uppercase}
-.dedup-results .url-cell{color:#60a5fa;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.tool-status-box{margin-top:10px;padding:10px 14px;border-radius:6px;font-size:12px;line-height:1.6;display:none;border:1px solid #334155;background:#0f172a}
+.dedup-results td,.dedup-results th{padding:4px 8px;border-bottom:1px solid #f0f0f2;text-align:left}
+.dedup-results th{color:#86868b;font-size:10px;text-transform:uppercase;letter-spacing:.04em}
+.dedup-results .url-cell{color:#007aff;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tool-status-box{margin-top:10px;padding:10px 14px;border-radius:6px;font-size:12px;line-height:1.6;display:none;border:1px solid #e8e8ed;background:#fafafa}
 .tool-status-box.visible{display:block}
-.tool-status-box.running{border-color:#7c3aed;color:#c4b5fd}
-.tool-status-box.success{border-color:#16a34a;color:#86efac}
-.tool-status-box.error{border-color:#dc2626;color:#fca5a5}
+.tool-status-box.running{border-color:#af52de;color:#8944ab;background:rgba(175,82,222,.06)}
+.tool-status-box.success{border-color:#34c759;color:#248a3d;background:rgba(52,199,89,.06)}
+.tool-status-box.error{border-color:#ff3b30;color:#d70015;background:rgba(255,59,48,.06)}
 @keyframes spin{to{transform:rotate(360deg)}}
-.spinner{display:inline-block;width:10px;height:10px;border:2px solid #475569;border-top-color:#a78bfa;border-radius:50%;animation:spin .7s linear infinite;margin-right:6px;vertical-align:middle}
-.tool-progress{height:3px;background:#1e293b;border-radius:2px;margin-top:8px;overflow:hidden;display:none}
-.tool-progress-fill{height:100%;background:#7c3aed;border-radius:2px;transition:width .3s}
+.spinner{display:inline-block;width:10px;height:10px;border:2px solid #d2d2d7;border-top-color:#af52de;border-radius:50%;animation:spin .7s linear infinite;margin-right:6px;vertical-align:middle}
+.ai-progress{margin:8px 18px 0;height:4px;background:#f0f0f2;border-radius:2px;overflow:hidden;display:none}
+.ai-progress-fill{height:100%;background:#af52de;border-radius:2px;transition:width .3s}
+.tool-progress{height:3px;background:#f0f0f2;border-radius:2px;margin-top:8px;overflow:hidden;display:none}
+.tool-progress-fill{height:100%;background:#af52de;border-radius:2px;transition:width .3s}
 </style>
 </head>
 <body>
 <header>
   <div class="dot" id="conn-dot"></div>
-  <h1>🔍 DevOps Scanner</h1>
+  <h1>DevOps Scanner</h1>
+  <span class="host-chip">localhost:${port}</span>
   <span class="reconnect-count" id="reconnect-count"></span>
-  <span class="uptime" id="uptime-label" title="" style="cursor:default;margin-left:auto"></span>
+  <div class="top-stats">
+    <div class="top-stat"><b style="color:#007aff" id="s-notion">—</b><span>synced</span></div>
+    <div class="top-stat"><b style="color:#af52de" id="s-cache">—</b><span>cached</span></div>
+    <div class="top-stat"><b style="color:#ff9500" id="s-clients">—</b><span>online</span></div>
+    <span class="uptime" id="uptime-label" title="" style="cursor:default"></span>
+  </div>
 </header>
 
-<div class="grid">
-  <div class="card"><div class="card-label">Total Matches</div><div class="card-value green" id="s-total">—</div><div class="card-sub" id="s-today"></div></div>
-  <div class="card"><div class="card-label">Notion Synced</div><div class="card-value blue" id="s-notion">—</div></div>
-  <div class="card"><div class="card-label">AI Cache</div><div class="card-value purple" id="s-cache">—</div></div>
-  <div class="card"><div class="card-label">Online Users</div><div class="card-value yellow" id="s-clients">—</div></div>
-</div>
+<div class="layout">
 
-<div class="cols">
-  <div class="panel">
-    <div class="panel-header">Live Activity <span class="badge" id="feed-count">0 events</span></div>
-    <div class="feed-filters">
-      <button class="filter-pill active" data-filter="all">ALL</button>
-      <button class="filter-pill" data-filter="tag-save">SAVE</button>
-      <button class="filter-pill" data-filter="tag-ai">AI</button>
-      <button class="filter-pill" data-filter="tag-err">ERR</button>
+  <div class="col">
+
+    <div class="hero-row">
+      <div class="panel stat-card">
+        <div class="card-label">Total matches</div>
+        <div class="card-value" id="s-total">—</div>
+        <div class="card-sub" id="s-today"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header">Users</div>
+        <div class="users-list" id="users-list"><span style="font-size:12px;color:#aeaeb2">No data yet</span></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header">AI engine</div>
+        <div class="ai-progress" id="ai-progress"><div class="ai-progress-fill" id="ai-progress-fill" style="width:0%"></div></div>
+        <div class="ai-bar" id="ai-bar">
+          <div class="ai-row"><label>Status</label><span style="color:#34c759;font-weight:500" id="s-active">—</span></div>
+          <div class="ai-row"><label>Queue</label><span class="val" id="s-queue-label">—</span></div>
+          <div class="ai-row"><label>Cache entries</label><span class="val" id="s-cache-label">—</span></div>
+          <div class="ai-row"><label>Model</label><span class="val" id="s-model">—</span></div>
+        </div>
+      </div>
     </div>
-    <div class="feed" id="feed"></div>
+    <div class="split">
+      <div class="panel">
+        <div class="panel-header"><span>Live feed</span>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="badge" id="feed-count">0 events</span>
+            <div class="feed-filters">
+              <button class="filter-pill active" data-filter="all">ALL</button>
+              <button class="filter-pill" data-filter="tag-save">SAVE</button>
+              <button class="filter-pill" data-filter="tag-ai">AI</button>
+              <button class="filter-pill" data-filter="tag-err">ERR</button>
+            </div>
+          </div>
+        </div>
+        <div class="feed" id="feed"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><span>Saves by source</span><span class="sub">all time · yellow = quiet 14d+</span></div>
+        <div class="src-list" id="src-list"><span style="font-size:12px;color:#aeaeb2">No data yet</span></div>
+      </div>
+    </div>
+
   </div>
-  <div>
-    <div class="panel" style="margin-bottom:12px">
-      <div class="panel-header">Users</div>
-      <div class="users-list" id="users-list"><span style="font-size:12px;color:#475569">No data yet</span></div>
-    </div>
+
+  <div class="col">
+
     <div class="panel">
-      <div class="panel-header">AI Engine</div>
-      <div class="ai-progress" id="ai-progress"><div class="ai-progress-fill" id="ai-progress-fill" style="width:0%"></div></div>
-      <div class="ai-bar" id="ai-bar">
-        <div class="ai-row"><label>Status</label><span style="color:#94a3b8" id="s-active">—</span></div>
-        <div class="ai-row"><label>Queue</label><span style="color:#94a3b8" id="s-queue-label">—</span></div>
-        <div class="ai-row"><label>Cache size</label><span style="color:#94a3b8" id="s-cache-label">—</span></div>
+      <div class="panel-header">
+        <div style="display:flex;align-items:baseline;gap:10px;min-width:0"><span>Activity</span><span class="sub mono" id="chart-days-label">last 14 days</span></div>
+        <div class="range-tabs">
+          <button class="range-tab" data-days="7">7d</button>
+          <button class="range-tab active" data-days="14">14d</button>
+          <button class="range-tab" data-days="30">30d</button>
+        </div>
+      </div>
+      <div id="chart-jobs-empty" class="chart-empty" style="display:none">No data yet. Start scanning on LinkedIn</div>
+      <div class="chart-wrap"><canvas id="chart-jobs"></canvas></div>
+      <div class="legend-row">
+        <div class="legend-item"><span class="legend-swatch" style="background:#ff375f"></span>Analyzed</div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#ff9f0a"></span>Saved</div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#bf5af2"></span>Notion synced</div>
       </div>
     </div>
-  </div>
-</div>
 
-<div class="charts">
-  <div class="panel">
-    <div class="panel-header">Jobs: Analyzed vs Saved vs Notion
-      <div class="range-tabs">
-        <button class="range-tab" data-days="7">7d</button>
-        <button class="range-tab active" data-days="14">14d</button>
-        <button class="range-tab" data-days="30">30d</button>
+    <div class="panel">
+      <div class="panel-header">
+        <div style="display:flex;align-items:baseline;gap:10px;min-width:0"><span>AI requests vs cache hits</span><span class="sub mono" id="chart-days-label2">last 14 days</span></div>
+      </div>
+      <div id="chart-ai-empty" class="chart-empty" style="display:none">No AI activity yet</div>
+      <div class="chart-wrap"><canvas id="chart-ai"></canvas></div>
+      <div class="legend-row">
+        <div class="legend-item"><span class="legend-swatch" style="background:#ff375f"></span>AI requests</div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#ff9f0a"></span>Cache hits</div>
       </div>
     </div>
-    <div id="chart-jobs-empty" class="chart-empty" style="display:none">No data yet. Start scanning on LinkedIn</div>
-    <div class="chart-wrap" style="padding:16px"><canvas id="chart-jobs"></canvas></div>
-  </div>
-  <div class="panel">
-    <div class="panel-header">AI: Requests vs Cache Hits
-      <div class="range-tabs">
-        <button class="range-tab" data-days="7">7d</button>
-        <button class="range-tab active" data-days="14">14d</button>
-        <button class="range-tab" data-days="30">30d</button>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div style="display:flex;align-items:baseline;gap:10px;min-width:0"><span>Tokens per request</span><span class="sub mono" id="chart-days-label3">last 14 days</span></div>
+      </div>
+      <div id="chart-tok-empty" class="chart-empty" style="display:none">No AI runs yet</div>
+      <div class="chart-wrap"><canvas id="chart-tok"></canvas></div>
+      <div class="legend-row">
+        <div class="legend-item"><span class="legend-swatch" style="background:#bf5af2"></span>Tokens per request</div>
       </div>
     </div>
-    <div id="chart-ai-empty" class="chart-empty" style="display:none">No AI activity yet</div>
-    <div class="chart-wrap" style="padding:16px"><canvas id="chart-ai"></canvas></div>
-  </div>
-  <div class="panel" style="grid-column:1/-1">
-    <div class="panel-header">Saves by Source <span class="badge">all time · ⚠ = no saves in 14 days</span></div>
-    <div class="src-list" id="src-list"><span style="font-size:12px;color:#475569">No data yet</span></div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div style="display:flex;align-items:baseline;gap:10px;min-width:0"><span>Response time</span><span class="sub mono" id="chart-days-label4">last 14 days</span></div>
+      </div>
+      <div id="chart-resp-empty" class="chart-empty" style="display:none">No AI runs yet</div>
+      <div class="chart-wrap"><canvas id="chart-resp"></canvas></div>
+      <div class="legend-row">
+        <div class="legend-item"><span class="legend-swatch" style="background:#00c7be"></span>Seconds per response</div>
+      </div>
+    </div>
+
   </div>
 </div>
 
 <div class="tools-section">
-  <div class="tools-panel">
-    <div class="panel-header">Notion Cleanup</div>
-    <div class="tools-body">
-      <div class="tools-row">
-        <button class="btn btn-ghost" id="btn-dry-run" onclick="runDedup(true)">Preview Duplicates</button>
-        <button class="btn btn-danger" id="btn-run" onclick="runDedup(false)" disabled>Remove Duplicates</button>
-        <button class="btn btn-ghost" id="btn-reconcile" onclick="runReconcile()">Reconcile Sync Status</button>
-        <button class="btn btn-ghost" id="btn-push-unsynced" onclick="runPushUnsynced()">Push Unsynced to Notion</button>
-        <span class="dedup-status" id="dedup-status">Set NOTION_TOKEN + NOTION_DB_ID env vars on server, then preview first.</span>
+  <div class="panel">
+    <div class="panel-header"><span>Notion tools</span><span class="sub">set NOTION_TOKEN + NOTION_DB_ID on the server first</span></div>
+    <div class="tools-grid">
+      <div class="tool-group">
+        <div class="tool-group-label">Cleanup</div>
+        <div class="tool-btns">
+          <button class="btn" id="btn-dry-run" onclick="runDedup(true)">Preview duplicates</button>
+          <button class="btn btn-danger" id="btn-run" onclick="runDedup(false)" disabled>Remove</button>
+        </div>
       </div>
+      <div class="tool-group">
+        <div class="tool-group-label">Sync</div>
+        <div class="tool-btns">
+          <button class="btn" id="btn-reconcile" onclick="runReconcile()">Reconcile status</button>
+          <button class="btn" id="btn-push-unsynced" onclick="runPushUnsynced()">Push unsynced</button>
+        </div>
+      </div>
+      <div class="tool-group">
+        <div class="tool-group-label">AI role fill</div>
+        <div class="tool-btns">
+          <button class="btn" onclick="loadNotionSchema()">Inspect schema</button>
+          <label style="font-size:11px;color:#86868b;display:flex;align-items:center;gap:4px">Prop:
+            <input id="fill-role-prop" class="text-input" value="AI Role">
+          </label>
+          <button class="btn" id="btn-fill-preview" onclick="runFillAI(true)">Check missing</button>
+          <button class="btn btn-primary" id="btn-fill-run" onclick="runFillAI(false)" disabled>Fill missing</button>
+          <button class="btn btn-danger" id="btn-fill-stop" onclick="stopFillAI()" disabled>Stop</button>
+        </div>
+      </div>
+      <div class="tool-group">
+        <div class="tool-group-label">CSV</div>
+        <div class="tool-btns">
+          <button class="btn" onclick="exportNotionCsv()">Export CSV</button>
+          <input type="file" id="import-file" accept=".csv">
+          <button class="btn" id="btn-import-preview" onclick="runNotionImport(true)">Preview import</button>
+          <button class="btn btn-danger" id="btn-import-run" onclick="runNotionImport(false)" disabled>Apply</button>
+        </div>
+      </div>
+    </div>
+    <div class="tools-footer">
+      <span class="dedup-status" id="dedup-status"></span>
       <div class="tool-status-box" id="dedup-status-box"></div>
       <div class="dedup-results" id="dedup-results"></div>
-    </div>
-  </div>
-  <div class="tools-panel" style="margin-top:12px">
-    <div class="panel-header">Notion AI Role Fill</div>
-    <div class="tools-body">
-      <div class="tools-row" style="margin-bottom:10px;gap:8px;flex-wrap:wrap">
-        <button class="btn btn-ghost" onclick="loadNotionSchema()" style="font-size:11px;padding:4px 10px">Inspect Schema</button>
-        <label style="font-size:11px;color:#94a3b8;display:flex;align-items:center;gap:4px">
-          Job Title prop: <input id="fill-role-prop" value="AI Role" style="background:#0f172a;border:1px solid #334155;color:#e2e8f0;padding:2px 6px;border-radius:4px;font-size:11px;width:120px">
-        </label>
-      </div>
-      <div class="tools-row">
-        <button class="btn btn-ghost" id="btn-fill-preview" onclick="runFillAI(true)">Check Missing</button>
-        <button class="btn btn-ghost" id="btn-fill-run" onclick="runFillAI(false)" disabled style="background:#7c3aed">Fill Missing AI Roles</button>
-        <button class="btn btn-danger" id="btn-fill-stop" onclick="stopFillAI()" disabled>Stop</button>
-        <span class="dedup-status" id="fill-status">Inspect schema first to confirm property names, then preview.</span>
-      </div>
+      <span class="dedup-status" id="fill-status"></span>
       <div class="tool-status-box" id="fill-status-box"></div>
       <div class="tool-progress" id="fill-progress"><div class="tool-progress-fill" id="fill-progress-fill" style="width:0%"></div></div>
       <div class="dedup-results" id="fill-results"></div>
-    </div>
-  </div>
-  <div class="tools-panel" style="margin-top:12px">
-    <div class="panel-header">Notion Export / Import (CSV)</div>
-    <div class="tools-body">
-      <div class="tools-row">
-        <button class="btn btn-ghost" onclick="exportNotionCsv()">Export to CSV</button>
-        <input type="file" id="import-file" accept=".csv" style="font-size:11px;color:#94a3b8">
-        <button class="btn btn-ghost" id="btn-import-preview" onclick="runNotionImport(true)">Preview Import</button>
-        <button class="btn btn-danger" id="btn-import-run" onclick="runNotionImport(false)" disabled>Apply Import</button>
-        <span class="dedup-status" id="import-status">Export, edit the CSV, then re-upload to patch Notion.</span>
-      </div>
+      <span class="dedup-status" id="import-status"></span>
       <div class="tool-status-box" id="import-status-box"></div>
       <div class="dedup-results" id="import-results"></div>
     </div>
@@ -1383,7 +1460,7 @@ function addFeedItem(tag, tagClass, msg, tsMs) {
   const el = document.createElement('div');
   el.className = 'feed-item';
   el.dataset.tag = tagClass;
-  el.innerHTML = '<span class="ts">'+ts+'</span><span class="msg">'+msg+'</span><span class="tag '+tagClass+'">'+tag+'</span>';
+  el.innerHTML = '<span class="tag '+tagClass+'">'+tag+'</span><span class="msg">'+msg+'</span><span class="ts">'+ts+'</span>';
   if (activeFeedFilter !== 'all' && tagClass !== activeFeedFilter) el.style.display = 'none';
   feed.prepend(el);
   while (feed.children.length > 200) feed.removeChild(feed.lastChild);
@@ -1422,19 +1499,20 @@ function loadStats() {
     // Users: last seen + Notion sync status
     const ul = document.getElementById('users-list');
     if (!d.byUser || d.byUser.length === 0) {
-      ul.innerHTML = '<span style="font-size:12px;color:#475569">No saves yet</span>';
+      ul.innerHTML = '<span style="font-size:12px;color:#aeaeb2">No saves yet</span>';
     } else {
       ul.innerHTML = d.byUser.map(u => {
         const init = esc((u.saved_by||'?').charAt(0).toUpperCase());
         const notionBadge = u.unsynced > 0
-          ? '<span class="user-notion notion-warn">⚠ '+u.unsynced+' unsynced</span>'
-          : '<span class="user-notion notion-ok">✓ Notion</span>';
+          ? '<span class="user-badge warn">'+u.unsynced+' unsynced</span>'
+          : '<span class="user-badge ok">synced</span>';
         return '<div class="user-row">'
           + '<div class="user-avatar">'+init+'</div>'
           + '<div class="user-meta">'
           + '<div class="user-name">'+esc(u.saved_by||'Unknown')+'</div>'
-          + '<div class="user-last">'+ago(u.last_saved)+' · '+u.n+' saves · '+notionBadge+'</div>'
+          + '<div class="user-last">'+ago(u.last_saved)+' · '+u.n+' saves</div>'
           + '</div>'
+          + notionBadge
           + '</div>';
       }).join('');
     }
@@ -1496,7 +1574,7 @@ function connectWS() {
     if (msg.action === 'newMatch') {
       const by = msg.savedBy ? ' by <b>'+esc(msg.savedBy)+'</b>' : '';
       const urlShort = msg.url ? msg.url.replace('https://www.linkedin.com/','…/') : 'unknown';
-      addFeedItem('SAVE', 'tag-save', 'New match'+by+': <span style="color:#475569">'+esc(urlShort)+'</span>', ts);
+      addFeedItem('SAVE', 'tag-save', 'New match'+by+': <span style="color:#aeaeb2">'+esc(urlShort)+'</span>', ts);
     } else if (msg.action === 'aiStart') {
       aiQueueTotal = Math.max(aiQueueTotal, msg.queueDepth + 1);
       addFeedItem('AI', 'tag-ai', 'Ollama started (queue: '+msg.queueDepth+')', ts);
@@ -1516,9 +1594,9 @@ function connectWS() {
       const pct  = msg.total ? Math.round((done / msg.total) * 100) : 0;
       setToolStatus('fill-status-box', 'running',
         'Processing ' + done + ' / ' + msg.total + ': ' +
-        '<span style="color:#86efac">' + msg.processed + ' updated</span> · ' +
-        '<span style="color:#94a3b8">' + msg.skipped + ' skipped</span>' +
-        (msg.errors ? ' · <span style="color:#fca5a5">' + msg.errors + ' errors</span>' : '')
+        '<span style="color:#34c759">' + msg.processed + ' updated</span> · ' +
+        '<span style="color:#86868b">' + msg.skipped + ' skipped</span>' +
+        (msg.errors ? ' · <span style="color:#ff3b30">' + msg.errors + ' errors</span>' : '')
       );
       const fill = document.getElementById('fill-progress-fill');
       if (fill) fill.style.width = pct + '%';
@@ -1532,7 +1610,7 @@ function connectWS() {
       if (!ts) {
         setToolStatus('fill-status-box', msg.cancelled ? 'error' : (msg.errors > 0 ? 'running' : 'success'),
           label + ': <b>' + msg.processed + '</b> updated, ' + msg.skipped + ' skipped' +
-          (msg.errors ? ', <span style="color:#fca5a5">' + msg.errors + ' errors</span>' : '')
+          (msg.errors ? ', <span style="color:#ff3b30">' + msg.errors + ' errors</span>' : '')
         );
         const prog = document.getElementById('fill-progress'); if (prog) prog.style.display = 'none';
         const s = document.getElementById('btn-fill-stop'); if (s) { s.disabled = true; s.textContent = 'Stop'; }
@@ -1553,23 +1631,23 @@ function connectWS() {
 // ---- Charts -----------------------------------------------------------------
 const CHART_DEFAULTS = {
   responsive: true, maintainAspectRatio: false,
-  plugins: { legend: { labels: { color: '#94a3b8', font: { size: 11 } } } },
+  plugins: { legend: { display: false } }, // custom legend rows below each chart
   scales: {
-    x: { ticks: { color: '#64748b', font: { size: 10 }, maxRotation: 45 }, grid: { color: '#1e293b' } },
-    y: { ticks: { color: '#64748b', font: { size: 10 } }, grid: { color: '#1e293b' }, beginAtZero: true },
+    x: { ticks: { color: '#aeaeb2', font: { size: 10 }, maxRotation: 45 }, grid: { display: false } },
+    y: { ticks: { color: '#aeaeb2', font: { size: 10 } }, grid: { color: '#f0f0f2' }, beginAtZero: true },
   },
 };
 
-let jobChart, aiChart;
+let jobChart, aiChart, tokChart, respChart;
 
 function initCharts() {
   const jobCtx = document.getElementById('chart-jobs').getContext('2d');
   jobChart = new Chart(jobCtx, {
     type: 'bar',
     data: { labels: [], datasets: [
-      { label: 'Analyzed',     data: [], backgroundColor: 'rgba(167,139,250,0.7)', borderColor: '#a78bfa', borderWidth: 1 },
-      { label: 'Saved',        data: [], backgroundColor: 'rgba(34,197,94,0.7)',   borderColor: '#22c55e', borderWidth: 1 },
-      { label: 'Notion Synced',data: [], backgroundColor: 'rgba(96,165,250,0.7)',  borderColor: '#60a5fa', borderWidth: 1 },
+      { label: 'Analyzed',     data: [], backgroundColor: '#ff375f', borderWidth: 0, borderRadius: 2 },
+      { label: 'Saved',        data: [], backgroundColor: '#ff9f0a', borderWidth: 0, borderRadius: 2 },
+      { label: 'Notion Synced',data: [], backgroundColor: '#bf5af2', borderWidth: 0, borderRadius: 2 },
     ]},
     options: { ...CHART_DEFAULTS },
   });
@@ -1578,10 +1656,35 @@ function initCharts() {
   aiChart = new Chart(aiCtx, {
     type: 'line',
     data: { labels: [], datasets: [
-      { label: 'AI Requests', data: [], borderColor: '#a78bfa', backgroundColor: 'rgba(167,139,250,0.1)', fill: true, tension: 0.3 },
-      { label: 'Cache Hits',  data: [], borderColor: '#22c55e', backgroundColor: 'rgba(34,197,94,0.1)',   fill: true, tension: 0.3 },
+      { label: 'AI Requests', data: [], borderColor: '#ff375f', backgroundColor: 'rgba(255,55,95,0.08)',  fill: true, tension: 0.3, pointRadius: 0 },
+      { label: 'Cache Hits',  data: [], borderColor: '#ff9f0a', backgroundColor: 'rgba(255,159,10,0.08)', fill: true, tension: 0.3, pointRadius: 0 },
     ]},
     options: { ...CHART_DEFAULTS },
+  });
+
+  // Per-request series: 100 points, so cap the time ticks
+  const PERF_OPTS = {
+    ...CHART_DEFAULTS,
+    scales: {
+      x: { ticks: { color: '#aeaeb2', font: { size: 10 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 6 }, grid: { display: false } },
+      y: CHART_DEFAULTS.scales.y,
+    },
+  };
+
+  tokChart = new Chart(document.getElementById('chart-tok').getContext('2d'), {
+    type: 'line',
+    data: { labels: [], datasets: [
+      { label: 'Tokens', data: [], borderColor: '#bf5af2', backgroundColor: 'rgba(191,90,242,0.08)', fill: true, tension: 0.2, pointRadius: 0, pointHitRadius: 6 },
+    ]},
+    options: PERF_OPTS,
+  });
+
+  respChart = new Chart(document.getElementById('chart-resp').getContext('2d'), {
+    type: 'line',
+    data: { labels: [], datasets: [
+      { label: 'Seconds', data: [], borderColor: '#00c7be', backgroundColor: 'rgba(0,199,190,0.08)', fill: true, tension: 0.2, pointRadius: 0, pointHitRadius: 6 },
+    ]},
+    options: PERF_OPTS,
   });
 }
 
@@ -1608,7 +1711,35 @@ function loadCharts() {
     aiChart.data.datasets[1].data = d.cacheHits;
     aiChart.update('none');
 
+    // Per-request performance: one point per real Ollama run, last 100
+    const perf = d.recentPerf || [];
+    const perfEmpty = perf.length === 0;
+    document.getElementById('chart-tok-empty').style.display = perfEmpty ? 'flex' : 'none';
+    document.getElementById('chart-tok').style.display = perfEmpty ? 'none' : 'block';
+    document.getElementById('chart-resp-empty').style.display = perfEmpty ? 'flex' : 'none';
+    document.getElementById('chart-resp').style.display = perfEmpty ? 'none' : 'block';
+
+    const perfLabels = perf.map(p =>
+      new Date(p.t).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }));
+    tokChart.data.labels = perfLabels;
+    tokChart.data.datasets[0].data = perf.map(p => p.tokens);
+    tokChart.update('none');
+
+    respChart.data.labels = perfLabels;
+    respChart.data.datasets[0].data = perf.map(p => p.secs);
+    respChart.update('none');
+
+    const perfSub = 'last ' + perf.length + ' requests';
+    document.getElementById('chart-days-label3').textContent = perfSub;
+    document.getElementById('chart-days-label4').textContent = perfSub;
+
     renderSources(d.bySource);
+
+    const modelEl = document.getElementById('s-model');
+    if (modelEl && d.byModel && d.byModel.length) modelEl.textContent = d.byModel[0].model;
+    const daysLabel = 'last ' + chartDays + ' days';
+    document.getElementById('chart-days-label').textContent = daysLabel;
+    document.getElementById('chart-days-label2').textContent = daysLabel;
   }).catch(() => {});
 }
 
@@ -1617,17 +1748,17 @@ function renderSources(rows) {
   const el = document.getElementById('src-list');
   if (!el) return;
   if (!rows || rows.length === 0) {
-    el.innerHTML = '<span style="font-size:12px;color:#475569">No saves yet</span>';
+    el.innerHTML = '<span style="font-size:12px;color:#aeaeb2">No saves yet</span>';
     return;
   }
   const max = Math.max(...rows.map(r => r.total));
   const quietCutoff = Date.now() - 14 * 86400000;
   el.innerHTML = rows.map(r => {
     const gid = r.source.startsWith('group:') ? esc(r.source.slice(6)) : null;
-    const label = gid ? '👥 Group ' + gid
-      : r.source === 'feed'   ? '📰 Home Feed'
-      : r.source === 'search' ? '🔍 Search'
-      : r.source === 'jobs'   ? '💼 Jobs'
+    const label = gid ? 'Group ' + gid
+      : r.source === 'feed'   ? 'Home feed'
+      : r.source === 'search' ? 'Search'
+      : r.source === 'jobs'   ? 'Jobs'
       : 'Other pages';
     const name = gid
       ? '<a href="https://www.linkedin.com/groups/' + gid + '/" target="_blank">' + label + '</a>'
@@ -1637,24 +1768,24 @@ function renderSources(rows) {
       ? new Date(r.lastSaved).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
       : '—';
     const meta = quiet
-      ? 'last save ' + last + ' <span class="src-pill">⚠ empty: 0 in 14d</span>'
-      : r.last7 + ' in last 7d · last save ' + last;
+      ? 'quiet · last save ' + last
+      : r.last7 + ' in last 7d · last ' + last;
     return '<div class="src-row' + (quiet ? ' quiet' : '') + '">'
-      + '<div class="src-name">' + name + '<div class="src-meta">' + meta + '</div></div>'
-      + '<div class="bar src-bar"><div class="bar-fill green" style="width:' + Math.max(1, Math.round(r.total / max * 100)) + '%"></div></div>'
+      + '<div style="min-width:0">'
+      + '<div class="src-top"><span class="src-name">' + name + '</span><span class="src-meta">' + meta + '</span></div>'
+      + '<div class="src-bar"><div class="src-fill" style="width:' + Math.max(1, Math.round(r.total / max * 100)) + '%"></div></div>'
+      + '</div>'
       + '<div class="src-count">' + r.total + '</div>'
       + '</div>';
   }).join('');
 }
 
-// Date range tabs: both chart panels
+// Date range tabs: one segmented control drives both charts
 document.querySelectorAll('.range-tab').forEach(tab => {
   tab.addEventListener('click', () => {
-    const days = parseInt(tab.dataset.days);
-    // Update active state only in parent panel
-    tab.closest('.panel').querySelectorAll('.range-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.range-tab').forEach(t => t.classList.remove('active'));
     tab.classList.add('active');
-    chartDays = days;
+    chartDays = parseInt(tab.dataset.days);
     loadCharts();
   });
 });
@@ -1715,7 +1846,7 @@ async function runPushUnsynced() {
     } else {
       var msg = '✓ Push done: <b>' + d.created + '</b> pages created, <b>' + d.linked + '</b> re-linked by snippet, ' +
         d.backfilledByUrl + ' backfilled by URL, ' + d.errors + ' errors, ' + d.stillUnsynced + ' still unsynced';
-      if (d.errorSamples && d.errorSamples.length) msg += '<br><span style="color:#fca5a5">' + esc(d.errorSamples.join(' | ')) + '</span>';
+      if (d.errorSamples && d.errorSamples.length) msg += '<br><span style="color:#ff3b30">' + esc(d.errorSamples.join(' | ')) + '</span>';
       setToolStatus('dedup-status-box', d.errors ? 'error' : 'success', msg);
       loadStats();
       loadCharts();
@@ -1741,7 +1872,7 @@ async function loadNotionSchema() {
     statusEl.textContent = 'DB: ' + (d.databaseTitle || 'Untitled') + ', ' + d.properties.length + ' properties found. Set the correct names above.';
     resultsEl.style.display = 'block';
     resultsEl.innerHTML = '<table><tr><th>Property Name</th><th>Type</th></tr>'
-      + d.properties.map(p => '<tr><td style="color:#e2e8f0">' + esc(p.name) + '</td><td style="color:#64748b">' + esc(p.type) + '</td></tr>').join('')
+      + d.properties.map(p => '<tr><td style="color:#1d1d1f">' + esc(p.name) + '</td><td style="color:#86868b">' + esc(p.type) + '</td></tr>').join('')
       + '</table>';
   } catch (e) {
     statusEl.textContent = '✗ Error: ' + e.message;
@@ -1797,8 +1928,8 @@ async function runFillAI(dry) {
       resultsEl.style.display = 'block';
       resultsEl.innerHTML = '<table><tr><th>Metric</th><th>Count</th></tr>'
         + '<tr><td>Total Notion pages</td><td>' + d.total + '</td></tr>'
-        + '<tr><td style="color:#f87171">Missing "' + aiRoleProp + '"</td><td style="color:#f87171">' + d.missingAIRole + '</td></tr>'
-        + '<tr><td style="color:#22c55e">Already filled</td><td style="color:#22c55e">' + (d.total - d.missingAIRole) + '</td></tr>'
+        + '<tr><td style="color:#ff3b30">Missing "' + aiRoleProp + '"</td><td style="color:#ff3b30">' + d.missingAIRole + '</td></tr>'
+        + '<tr><td style="color:#34c759">Already filled</td><td style="color:#34c759">' + (d.total - d.missingAIRole) + '</td></tr>'
         + '</table>';
     } else {
       // Processing happens in background: status updates come via WebSocket
@@ -1846,8 +1977,8 @@ async function runDedup(dry) {
         resultsEl.innerHTML = '<table><tr><th>URL</th><th>Keep (oldest)</th><th>Remove</th></tr>'
           + d.dupes.map(row =>
               '<tr><td class="url-cell" title="'+esc(row.url)+'">'+esc(row.url)+'</td>'
-              + '<td style="color:#22c55e;white-space:nowrap">'+row.keepCreated.slice(0,10)+'</td>'
-              + '<td style="color:#f87171">'+row.remove.map(p=>p.created.slice(0,10)).join(', ')+'</td></tr>'
+              + '<td style="color:#34c759;white-space:nowrap">'+row.keepCreated.slice(0,10)+'</td>'
+              + '<td style="color:#ff3b30">'+row.remove.map(p=>p.created.slice(0,10)).join(', ')+'</td></tr>'
             ).join('')
           + '</table>';
       }
@@ -1907,7 +2038,7 @@ async function runNotionImport(dry) {
       btnRun.disabled = d.updated === 0;
       resultsEl.style.display = 'block';
       resultsEl.innerHTML = '<table><tr><th>Page ID</th><th>Fields to update</th></tr>'
-        + d.changes.map(c => '<tr><td style="color:#e2e8f0">' + esc(c.pageId) + '</td><td style="color:#64748b">' + esc(c.fields.join(', ')) + '</td></tr>').join('')
+        + d.changes.map(c => '<tr><td style="color:#1d1d1f">' + esc(c.pageId) + '</td><td style="color:#86868b">' + esc(c.fields.join(', ')) + '</td></tr>').join('')
         + '</table>';
     } else {
       setToolStatus('import-status-box', 'success', '✓ Patched <b>' + d.updated + '</b> page(s).');
