@@ -425,7 +425,10 @@ app.get('/ai/:hash', (req, res) => {
 app.get('/health', async (req, res) => {
   try {
     const row = await db.get('SELECT COUNT(*) as n FROM matches');
-    res.json({ ok: true, matches: row.n, aiCacheSize: aiCache.size, wsClients: clients.size });
+    res.json({
+      ok: true, matches: row.n, aiCacheSize: aiCache.size, wsClients: clients.size,
+      notionConfigured: !!(process.env.NOTION_TOKEN && process.env.NOTION_DB_ID),
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -1213,6 +1216,11 @@ app.post('/notion-fill-ai', async (req, res) => {
   }
 });
 
+// Vendored Chart.js: dashboard works without internet access
+app.get('/vendor/chart.umd.min.js', (req, res) => {
+  res.sendFile(path.join(__dirname, 'vendor', 'chart.umd.min.js'));
+});
+
 // GET /dashboard: real-time web dashboard
 app.get('/dashboard', (req, res) => {
   res.setHeader('Content-Type', 'text/html');
@@ -1229,23 +1237,45 @@ function DASHBOARD_HTML(port) {
 <title>DevOps Scanner - Server Dashboard</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231d1d1f'/%3E%3Ccircle cx='32' cy='32' r='22' fill='none' stroke='%233a3a3c' stroke-width='2'/%3E%3Ccircle cx='32' cy='32' r='12' fill='none' stroke='%233a3a3c' stroke-width='2'/%3E%3Cpath d='M32 32 L32 10 A22 22 0 0 1 51 21 Z' fill='%23007aff' opacity='.85'/%3E%3Cline x1='32' y1='32' x2='51' y2='21' stroke='%2364b5ff' stroke-width='2.5' stroke-linecap='round'/%3E%3Ccircle cx='24' cy='42' r='4' fill='%2334c759'/%3E%3Ccircle cx='32' cy='32' r='2.5' fill='%23fff'/%3E%3C/svg%3E">
 <style>
+:root{
+  --bg:#f5f5f7;--panel:#fff;--border:#e8e8ed;--border-soft:#f0f0f2;--row-border:#f2f2f4;
+  --text:#1d1d1f;--text-2:#424245;--sub:#86868b;--faint:#aeaeb2;
+  --chip-bg:#f5f5f7;--hover:#e8e8ed;--input-border:#d2d2d7;--status-bg:#fafafa;
+  --shadow:rgba(0,0,0,.04)
+}
+:root[data-theme=dark]{
+  --bg:#161617;--panel:#1d1d1f;--border:#2c2c2e;--border-soft:#2c2c2e;--row-border:#2c2c2e;
+  --text:#f5f5f7;--text-2:#d1d1d6;--sub:#98989d;--faint:#6e6e73;
+  --chip-bg:#2c2c2e;--hover:#3a3a3c;--input-border:#48484a;--status-bg:#232325;
+  --shadow:rgba(0,0,0,.3)
+}
+@media(prefers-color-scheme:dark){
+  :root:not([data-theme=light]){
+    --bg:#161617;--panel:#1d1d1f;--border:#2c2c2e;--border-soft:#2c2c2e;--row-border:#2c2c2e;
+    --text:#f5f5f7;--text-2:#d1d1d6;--sub:#98989d;--faint:#6e6e73;
+    --chip-bg:#2c2c2e;--hover:#3a3a3c;--input-border:#48484a;--status-bg:#232325;
+    --shadow:rgba(0,0,0,.3)
+  }
+}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,sans-serif;background:#f5f5f7;color:#1d1d1f;min-height:100vh}
+body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
 a{color:#007aff;text-decoration:none}
 a:hover{color:#0071e3}
 .mono{font-family:ui-monospace,'SF Mono',Menlo,monospace}
-header{background:#fff;border-bottom:1px solid #f0f0f2;padding:0 28px;height:56px;display:flex;align-items:center;gap:14px}
-header h1{font-size:15px;font-weight:600;color:#1d1d1f;letter-spacing:-.01em}
-.host-chip{font-size:11px;font-family:ui-monospace,'SF Mono',Menlo,monospace;color:#86868b;border:1px solid #e8e8ed;border-radius:4px;padding:2px 8px}
+header{background:var(--panel);border-bottom:1px solid var(--border-soft);padding:0 28px;height:56px;display:flex;align-items:center;gap:14px}
+header h1{font-size:15px;font-weight:600;color:var(--text);letter-spacing:-.01em}
+.host-chip{font-size:11px;font-family:ui-monospace,'SF Mono',Menlo,monospace;color:var(--sub);border:1px solid var(--border);border-radius:4px;padding:2px 8px}
+.theme-btn{font-size:11px;color:var(--sub);border:1px solid var(--border);border-radius:4px;padding:2px 8px;background:transparent;cursor:pointer}
+.theme-btn:hover{background:var(--hover)}
 .dot{width:8px;height:8px;border-radius:50%;background:#34c759;animation:pulse 2s infinite;flex-shrink:0}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
 .dot.offline{background:#ff3b30;animation:none}
 .top-stats{margin-left:auto;display:flex;align-items:baseline;gap:28px}
 .top-stat{display:flex;align-items:baseline;gap:7px}
 .top-stat b{font-size:17px;font-weight:700;font-variant-numeric:tabular-nums}
-.top-stat span{font-size:11px;color:#86868b}
-.uptime{font-size:11px;font-family:ui-monospace,'SF Mono',Menlo,monospace;color:#86868b}
-.reconnect-count{font-size:11px;color:#86868b}
+.top-stat span{font-size:11px;color:var(--sub)}
+.uptime{font-size:11px;font-family:ui-monospace,'SF Mono',Menlo,monospace;color:var(--sub)}
+.reconnect-count{font-size:11px;color:var(--sub)}
 .layout{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:16px;padding:20px 28px;align-items:start}
 @media(max-width:1100px){.layout{grid-template-columns:1fr}}
 .col{display:flex;flex-direction:column;gap:16px;min-width:0}
@@ -1254,102 +1284,120 @@ header h1{font-size:15px;font-weight:600;color:#1d1d1f;letter-spacing:-.01em}
 .tools-section{padding:0 28px 20px}
 .split{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:start}
 @media(max-width:900px){.split{grid-template-columns:1fr}}
-.panel{background:#fff;border:1px solid #e8e8ed;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.04);overflow:hidden}
-.panel-header{padding:14px 18px;border-bottom:1px solid #f0f0f2;font-size:13px;font-weight:600;color:#1d1d1f;display:flex;align-items:center;justify-content:space-between;gap:10px}
-.panel-header .sub{font-size:11px;font-weight:400;color:#86868b}
-.badge{font-size:10px;background:#f5f5f7;color:#86868b;border:1px solid #e8e8ed;padding:2px 8px;border-radius:10px;font-weight:400}
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:12px;box-shadow:0 1px 3px var(--shadow);overflow:hidden}
+.panel-header{padding:14px 18px;border-bottom:1px solid var(--border-soft);font-size:13px;font-weight:600;color:var(--text);display:flex;align-items:center;justify-content:space-between;gap:10px}
+.panel-header .sub{font-size:11px;font-weight:400;color:var(--sub)}
+.badge{font-size:10px;background:var(--chip-bg);color:var(--sub);border:1px solid var(--border);padding:2px 8px;border-radius:10px;font-weight:400}
 .stat-card{padding:18px;display:flex;flex-direction:column;justify-content:center;gap:4px}
-.card-label{font-size:11px;font-weight:600;color:#86868b;text-transform:uppercase;letter-spacing:.06em}
-.card-value{font-size:34px;font-weight:700;color:#1d1d1f;line-height:1;font-variant-numeric:tabular-nums}
+.card-label{font-size:11px;font-weight:600;color:var(--sub);text-transform:uppercase;letter-spacing:.06em}
+.card-value{font-size:34px;font-weight:700;color:var(--text);line-height:1;font-variant-numeric:tabular-nums}
 .card-sub{font-size:12px;color:#34c759;font-weight:500}
 .feed{height:520px;overflow-y:auto;padding:6px 0}
-.feed-item{padding:8px 18px;border-bottom:1px solid #f2f2f4;font-size:12px;display:flex;gap:10px;align-items:flex-start;animation:fadeIn .3s}
+.feed-item{padding:8px 18px;border-bottom:1px solid var(--row-border);font-size:12px;display:flex;gap:10px;align-items:flex-start;animation:fadeIn .3s}
 @keyframes fadeIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
 .feed-item .tag{flex-shrink:0;font-size:10px;font-weight:600;letter-spacing:.05em;width:42px;margin-top:2px;font-family:ui-monospace,'SF Mono',Menlo,monospace}
-.feed-item .msg{color:#86868b;flex:1;line-height:1.45}
-.feed-item .msg b{color:#1d1d1f;font-weight:500}
-.feed-item .ts{color:#aeaeb2;flex-shrink:0;font-size:10px;margin-top:2px;font-family:ui-monospace,'SF Mono',Menlo,monospace}
+.feed-item .msg{color:var(--sub);flex:1;line-height:1.45}
+.feed-item .msg b{color:var(--text);font-weight:500}
+.feed-item .ts{color:var(--faint);flex-shrink:0;font-size:10px;margin-top:2px;font-family:ui-monospace,'SF Mono',Menlo,monospace}
 .tag-save{color:#34c759}
 .tag-ai{color:#007aff}
-.tag-cache{color:#86868b}
+.tag-cache{color:var(--sub)}
 .tag-err{color:#ff3b30}
-.tag-dup{color:#86868b}
+.tag-dup{color:var(--sub)}
 .feed-filters{display:flex;gap:4px}
-.filter-pill{font-size:10px;font-weight:600;letter-spacing:.04em;padding:2px 8px;border-radius:4px;border:1px solid #e8e8ed;color:#86868b;background:transparent;cursor:pointer;transition:all .15s}
-.filter-pill.active{background:#f5f5f7;color:#1d1d1f;border-color:#d2d2d7}
-.range-tabs{display:flex;gap:2px;background:#f5f5f7;border:1px solid #e8e8ed;border-radius:6px;padding:2px}
-.range-tab{font-size:11px;font-weight:500;padding:3px 12px;border-radius:4px;border:none;color:#86868b;background:transparent;cursor:pointer}
-.range-tab.active{background:#fff;color:#1d1d1f;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.filter-pill{font-size:10px;font-weight:600;letter-spacing:.04em;padding:2px 8px;border-radius:4px;border:1px solid var(--border);color:var(--sub);background:transparent;cursor:pointer;transition:all .15s}
+.filter-pill.active{background:var(--chip-bg);color:var(--text);border-color:var(--input-border)}
+.range-tabs{display:flex;gap:2px;background:var(--chip-bg);border:1px solid var(--border);border-radius:6px;padding:2px}
+.range-tab{font-size:11px;font-weight:500;padding:3px 12px;border-radius:4px;border:none;color:var(--sub);background:transparent;cursor:pointer}
+.range-tab.active{background:var(--panel);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.15)}
 .chart-wrap{position:relative;height:170px;padding:12px 18px 6px}
-.chart-empty{display:flex;align-items:center;justify-content:center;height:170px;font-size:12px;color:#aeaeb2}
+.chart-empty{display:flex;align-items:center;justify-content:center;height:170px;font-size:12px;color:var(--faint)}
 .legend-row{display:flex;gap:18px;padding:0 18px 14px}
-.legend-item{display:flex;align-items:center;gap:6px;font-size:11px;color:#86868b}
+.legend-item{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--sub)}
 .legend-swatch{width:8px;height:8px;border-radius:2px;flex-shrink:0}
 .users-list{padding:8px 18px 12px}
-.user-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #f2f2f4}
+.user-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--row-border)}
 .user-row:last-child{border-bottom:none}
-.user-avatar{width:26px;height:26px;border-radius:6px;background:#f5f5f7;border:1px solid #d2d2d7;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#86868b;flex-shrink:0}
+.user-avatar{width:26px;height:26px;border-radius:6px;background:var(--chip-bg);border:1px solid var(--input-border);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--sub);flex-shrink:0}
 .user-meta{flex:1;min-width:0}
-.user-name{font-size:12px;font-weight:500;color:#1d1d1f}
-.user-last{font-size:10px;color:#86868b}
+.user-name{font-size:12px;font-weight:500;color:var(--text)}
+.user-last{font-size:10px;color:var(--sub)}
 .user-badge{font-size:10px;font-weight:500;padding:2px 8px;border-radius:4px;flex-shrink:0}
 .user-badge.ok{color:#34c759;background:rgba(52,199,89,.14)}
 .user-badge.warn{color:#ff9500;background:rgba(255,149,0,.14)}
-.user-badge.idle{color:#86868b;background:#f2f2f4}
-.user-remove{width:20px;height:20px;border:none;border-radius:5px;background:transparent;color:#aeaeb2;font-size:14px;line-height:1;cursor:pointer;flex-shrink:0}
+.user-badge.idle{color:var(--sub);background:var(--row-border)}
+.user-remove{width:20px;height:20px;border:none;border-radius:5px;background:transparent;color:var(--faint);font-size:14px;line-height:1;cursor:pointer;flex-shrink:0}
 .user-remove:hover{background:rgba(255,59,48,.12);color:#ff3b30}
 .ai-bar{padding:12px 18px;display:flex;flex-direction:column;gap:9px}
 .ai-row{display:flex;align-items:center;justify-content:space-between;font-size:12px}
-.ai-row label{color:#86868b}
-.ai-row .val{color:#424245;font-family:ui-monospace,'SF Mono',Menlo,monospace}
+.ai-row label{color:var(--sub)}
+.ai-row .val{color:var(--text-2);font-family:ui-monospace,'SF Mono',Menlo,monospace}
 .src-list{padding:6px 18px 12px}
-.src-row{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center;padding:10px 0;border-bottom:1px solid #f2f2f4}
+.src-row{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center;padding:10px 0;border-bottom:1px solid var(--row-border)}
 .src-row:last-child{border-bottom:none}
 .src-top{display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:6px}
-.src-name{font-size:12px;font-weight:500;color:#1d1d1f;white-space:nowrap}
-.src-meta{font-size:11px;color:#86868b}
-.src-bar{background:#f5f5f7;border-radius:3px;height:6px;overflow:hidden}
+.src-name{font-size:12px;font-weight:500;color:var(--text);white-space:nowrap}
+.src-meta{font-size:11px;color:var(--sub)}
+.src-bar{background:var(--chip-bg);border-radius:3px;height:6px;overflow:hidden}
 .src-fill{height:100%;border-radius:3px;background:#00c7be}
 .src-row.quiet .src-fill{background:#ffd60a}
-.src-count{font-size:14px;font-weight:600;color:#1d1d1f;font-variant-numeric:tabular-nums;min-width:32px;text-align:right}
+.src-count{font-size:14px;font-weight:600;color:var(--text);font-variant-numeric:tabular-nums;min-width:32px;text-align:right}
 .tools-grid{padding:16px 18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
 .tool-group{display:flex;flex-direction:column;gap:8px}
-.tool-group-label{font-size:11px;font-weight:600;color:#86868b;text-transform:uppercase;letter-spacing:.06em}
+.tool-group-label{font-size:11px;font-weight:600;color:var(--sub);text-transform:uppercase;letter-spacing:.06em}
 .tool-btns{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-.btn{font-size:12px;font-weight:500;padding:6px 12px;border-radius:6px;border:1px solid #d2d2d7;cursor:pointer;background:#f5f5f7;color:#1d1d1f;transition:background .15s,opacity .15s}
-.btn:hover:not(:disabled){background:#e8e8ed}
+.btn{font-size:12px;font-weight:500;padding:6px 12px;border-radius:6px;border:1px solid var(--input-border);cursor:pointer;background:var(--chip-bg);color:var(--text);transition:background .15s,opacity .15s}
+.btn:hover:not(:disabled){background:var(--hover)}
 .btn:disabled{opacity:.4;cursor:default}
 .btn-danger{color:#ff3b30}
 .btn-primary{background:#af52de;border-color:#af52de;color:#fff}
 .btn-primary:hover:not(:disabled){background:#9d43cc}
-.text-input{background:#fff;border:1px solid #d2d2d7;color:#1d1d1f;padding:3px 8px;border-radius:4px;font-size:11px;width:100px}
-input[type=file]{font-size:11px;color:#86868b;max-width:210px}
+.text-input{background:var(--panel);border:1px solid var(--input-border);color:var(--text);padding:3px 8px;border-radius:4px;font-size:11px;width:100px}
+input[type=file]{font-size:11px;color:var(--sub);max-width:210px}
 .tools-footer{padding:0 18px 14px}
-.dedup-status{font-size:11px;color:#86868b;display:block;margin-top:6px}
+.dedup-status{font-size:11px;color:var(--sub);display:block;margin-top:6px}
 .dedup-status:empty{display:none}
-.dedup-results{margin-top:10px;font-size:12px;color:#86868b;display:none}
+.dedup-results{margin-top:10px;font-size:12px;color:var(--sub);display:none}
 .dedup-results table{width:100%;border-collapse:collapse;margin-top:8px}
-.dedup-results td,.dedup-results th{padding:4px 8px;border-bottom:1px solid #f0f0f2;text-align:left}
-.dedup-results th{color:#86868b;font-size:10px;text-transform:uppercase;letter-spacing:.04em}
+.dedup-results td,.dedup-results th{padding:4px 8px;border-bottom:1px solid var(--border-soft);text-align:left}
+.dedup-results th{color:var(--sub);font-size:10px;text-transform:uppercase;letter-spacing:.04em}
 .dedup-results .url-cell{color:#007aff;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.tool-status-box{margin-top:10px;padding:10px 14px;border-radius:6px;font-size:12px;line-height:1.6;display:none;border:1px solid #e8e8ed;background:#fafafa}
+.tool-status-box{margin-top:10px;padding:10px 14px;border-radius:6px;font-size:12px;line-height:1.6;display:none;border:1px solid var(--border);background:var(--status-bg)}
 .tool-status-box.visible{display:block}
 .tool-status-box.running{border-color:#af52de;color:#8944ab;background:rgba(175,82,222,.06)}
 .tool-status-box.success{border-color:#34c759;color:#248a3d;background:rgba(52,199,89,.06)}
 .tool-status-box.error{border-color:#ff3b30;color:#d70015;background:rgba(255,59,48,.06)}
 @keyframes spin{to{transform:rotate(360deg)}}
-.spinner{display:inline-block;width:10px;height:10px;border:2px solid #d2d2d7;border-top-color:#af52de;border-radius:50%;animation:spin .7s linear infinite;margin-right:6px;vertical-align:middle}
-.ai-progress{margin:8px 18px 0;height:4px;background:#f0f0f2;border-radius:2px;overflow:hidden;display:none}
+.spinner{display:inline-block;width:10px;height:10px;border:2px solid var(--input-border);border-top-color:#af52de;border-radius:50%;animation:spin .7s linear infinite;margin-right:6px;vertical-align:middle}
+.matches-list{max-height:420px;overflow-y:auto}
+.match-row{display:flex;align-items:center;gap:12px;padding:9px 18px;border-bottom:1px solid var(--row-border)}
+.match-row:last-child{border-bottom:none}
+.match-main{flex:1;min-width:0}
+.match-title{font-size:12px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.match-meta{font-size:10px;color:var(--sub);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.match-badge{font-size:9px;font-weight:600;padding:1px 6px;border-radius:4px;flex-shrink:0}
+.match-badge.synced{color:#bf5af2;background:rgba(191,90,242,.14)}
+.match-badge.unsynced{color:#ff9500;background:rgba(255,149,0,.14)}
+.match-status{font-size:11px;background:var(--panel);color:var(--text);border:1px solid var(--input-border);border-radius:5px;padding:2px 4px;flex-shrink:0}
+.ai-progress{margin:8px 18px 0;height:4px;background:var(--border-soft);border-radius:2px;overflow:hidden;display:none}
 .ai-progress-fill{height:100%;background:#af52de;border-radius:2px;transition:width .3s}
-.tool-progress{height:3px;background:#f0f0f2;border-radius:2px;margin-top:8px;overflow:hidden;display:none}
+.tool-progress{height:3px;background:var(--border-soft);border-radius:2px;margin-top:8px;overflow:hidden;display:none}
 .tool-progress-fill{height:100%;background:#af52de;border-radius:2px;transition:width .3s}
 </style>
+<script>
+// Apply saved theme before first paint to avoid a flash of the wrong scheme
+try {
+  var _t = localStorage.getItem('dashTheme');
+  if (_t === 'light' || _t === 'dark') document.documentElement.dataset.theme = _t;
+} catch (e) {}
+</script>
 </head>
 <body>
 <header>
   <div class="dot" id="conn-dot"></div>
   <h1>DevOps Scanner</h1>
   <span class="host-chip">localhost:${port}</span>
+  <button class="theme-btn" id="theme-btn" title="Theme: follows system by default"></button>
   <span class="reconnect-count" id="reconnect-count"></span>
   <div class="top-stats">
     <div class="top-stat"><b style="color:#007aff" id="s-notion">—</b><span>synced</span></div>
@@ -1371,7 +1419,7 @@ input[type=file]{font-size:11px;color:#86868b;max-width:210px}
       </div>
       <div class="panel">
         <div class="panel-header">Users</div>
-        <div class="users-list" id="users-list"><span style="font-size:12px;color:#aeaeb2">No data yet</span></div>
+        <div class="users-list" id="users-list"><span style="font-size:12px;color:var(--faint)">No data yet</span></div>
       </div>
       <div class="panel">
         <div class="panel-header">AI engine</div>
@@ -1401,8 +1449,13 @@ input[type=file]{font-size:11px;color:#86868b;max-width:210px}
       </div>
       <div class="panel">
         <div class="panel-header"><span>Saves by source</span><span class="sub">all time · yellow = quiet 14d+</span></div>
-        <div class="src-list" id="src-list"><span style="font-size:12px;color:#aeaeb2">No data yet</span></div>
+        <div class="src-list" id="src-list"><span style="font-size:12px;color:var(--faint)">No data yet</span></div>
       </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header"><span>Recent matches</span><span class="badge" id="matches-count">—</span></div>
+      <div class="matches-list" id="matches-list"><span style="font-size:12px;color:var(--faint);padding:12px 18px;display:block">No matches yet</span></div>
     </div>
 
   </div>
@@ -1465,8 +1518,8 @@ input[type=file]{font-size:11px;color:#86868b;max-width:210px}
 </div>
 
 <div class="tools-section">
-  <div class="panel">
-    <div class="panel-header"><span>Notion tools</span><span class="sub">set NOTION_TOKEN + NOTION_DB_ID on the server first</span></div>
+  <div class="panel" id="notion-tools-panel">
+    <div class="panel-header"><span>Notion tools</span><span class="sub" id="notion-tools-sub">set NOTION_TOKEN + NOTION_DB_ID on the server first</span></div>
     <div class="tools-grid">
       <div class="tool-group">
         <div class="tool-group-label">Cleanup</div>
@@ -1486,7 +1539,7 @@ input[type=file]{font-size:11px;color:#86868b;max-width:210px}
         <div class="tool-group-label">AI role fill</div>
         <div class="tool-btns">
           <button class="btn" onclick="loadNotionSchema()">Inspect schema</button>
-          <label style="font-size:11px;color:#86868b;display:flex;align-items:center;gap:4px">Prop:
+          <label style="font-size:11px;color:var(--sub);display:flex;align-items:center;gap:4px">Prop:
             <input id="fill-role-prop" class="text-input" value="AI Role">
           </label>
           <button class="btn" id="btn-fill-preview" onclick="runFillAI(true)">Check missing</button>
@@ -1529,7 +1582,7 @@ input[type=file]{font-size:11px;color:#86868b;max-width:210px}
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script src="/vendor/chart.umd.min.js"></script>
 <script>
 const WS_URL = 'ws://' + location.host + '/ws';
 // Browser's UTC offset in minutes; server uses it to draw day boundaries at this
@@ -1539,7 +1592,7 @@ const STATS_URL = '/stats?tz=' + TZ_OFFSET;
 let ws, feedCount = 0, serverStartMs = null;
 let activeFeedFilter = 'all';
 let chartDays = 14;
-let aiQueueTotal = 0, aiQueueDone = 0;
+let aiQueueDone = 0;
 let reconnectTimer = null;
 
 // ---- Helpers ----------------------------------------------------------------
@@ -1608,6 +1661,7 @@ function loadStats() {
   fetch(STATS_URL).then(r=>r.json()).then(d => {
     document.getElementById('s-total').textContent = d.totalMatches;
     document.getElementById('s-today').textContent = d.todayMatches + ' today';
+    document.title = (d.todayMatches > 0 ? '(' + d.todayMatches + ') ' : '') + 'DevOps Scanner - Server Dashboard';
     document.getElementById('s-notion').textContent = d.withNotion;
     document.getElementById('s-cache').textContent = d.aiCacheSize;
     document.getElementById('s-queue-label').textContent = d.aiQueueDepth;
@@ -1624,7 +1678,7 @@ function loadStats() {
     // Users: last seen + Notion sync status
     const ul = document.getElementById('users-list');
     if (!d.byUser || d.byUser.length === 0) {
-      ul.innerHTML = '<span style="font-size:12px;color:#aeaeb2">No saves yet</span>';
+      ul.innerHTML = '<span style="font-size:12px;color:var(--faint)">No saves yet</span>';
     } else {
       ul.innerHTML = d.byUser.map(u => {
         const init = esc((u.saved_by||'?').charAt(0).toUpperCase());
@@ -1651,16 +1705,18 @@ function loadStats() {
 }
 
 // ---- AI queue progress bar --------------------------------------------------
+// Progress derived from done vs remaining at each event; no burst-total tracking,
+// so mid-burst arrivals shrink the bar instead of making it jump past 100%.
 function setAIProgress(queueDepth, active) {
   const bar = document.getElementById('ai-progress');
   const fill = document.getElementById('ai-progress-fill');
   if (active && queueDepth >= 0) {
     bar.style.display = 'block';
-    const pct = aiQueueTotal > 0 ? Math.round((aiQueueDone / aiQueueTotal) * 100) : 0;
+    const pct = Math.round((aiQueueDone / (aiQueueDone + queueDepth + 1)) * 100);
     fill.style.width = pct + '%';
   } else {
     bar.style.display = 'none';
-    aiQueueTotal = 0; aiQueueDone = 0;
+    aiQueueDone = 0;
   }
 }
 
@@ -1697,7 +1753,7 @@ function connectWS() {
       return;
     }
     handleEvent(msg, null);
-    if (msg.action === 'newMatch') { loadStats(); loadCharts(); }
+    if (msg.action === 'newMatch') { loadStats(); loadCharts(); loadMatches(); }
     if (msg.action === 'aiComplete') loadCharts();
   };
 
@@ -1705,9 +1761,8 @@ function connectWS() {
     if (msg.action === 'newMatch') {
       const by = msg.savedBy ? ' by <b>'+esc(msg.savedBy)+'</b>' : '';
       const urlShort = msg.url ? msg.url.replace('https://www.linkedin.com/','…/') : 'unknown';
-      addFeedItem('SAVE', 'tag-save', 'New match'+by+': <span style="color:#aeaeb2">'+esc(urlShort)+'</span>', ts);
+      addFeedItem('SAVE', 'tag-save', 'New match'+by+': <span style="color:var(--faint)">'+esc(urlShort)+'</span>', ts);
     } else if (msg.action === 'aiStart') {
-      aiQueueTotal = Math.max(aiQueueTotal, msg.queueDepth + 1);
       addFeedItem('AI', 'tag-ai', 'Ollama started (queue: '+msg.queueDepth+')', ts);
       if (!ts) { document.getElementById('s-queue-label').textContent = msg.queueDepth; document.getElementById('s-active').textContent = 'running'; setAIProgress(msg.queueDepth, true); }
     } else if (msg.action === 'aiComplete') {
@@ -1726,7 +1781,7 @@ function connectWS() {
       setToolStatus('fill-status-box', 'running',
         'Processing ' + done + ' / ' + msg.total + ': ' +
         '<span style="color:#34c759">' + msg.processed + ' updated</span> · ' +
-        '<span style="color:#86868b">' + msg.skipped + ' skipped</span>' +
+        '<span style="color:var(--sub)">' + msg.skipped + ' skipped</span>' +
         (msg.errors ? ' · <span style="color:#ff3b30">' + msg.errors + ' errors</span>' : '')
       );
       const fill = document.getElementById('fill-progress-fill');
@@ -1764,8 +1819,8 @@ const CHART_DEFAULTS = {
   responsive: true, maintainAspectRatio: false,
   plugins: { legend: { display: false } }, // custom legend rows below each chart
   scales: {
-    x: { ticks: { color: '#aeaeb2', font: { size: 10 }, maxRotation: 45 }, grid: { display: false } },
-    y: { ticks: { color: '#aeaeb2', font: { size: 10 } }, grid: { color: '#f0f0f2' }, beginAtZero: true },
+    x: { ticks: { color: '#8e8e93', font: { size: 10 }, maxRotation: 45 }, grid: { display: false } },
+    y: { ticks: { color: '#8e8e93', font: { size: 10 } }, grid: { color: 'rgba(140,140,140,.18)' }, beginAtZero: true },
   },
 };
 
@@ -1797,7 +1852,7 @@ function initCharts() {
   const PERF_OPTS = {
     ...CHART_DEFAULTS,
     scales: {
-      x: { ticks: { color: '#aeaeb2', font: { size: 10 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 6 }, grid: { display: false } },
+      x: { ticks: { color: '#8e8e93', font: { size: 10 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 6 }, grid: { display: false } },
       y: CHART_DEFAULTS.scales.y,
     },
   };
@@ -1820,6 +1875,7 @@ function initCharts() {
 }
 
 function loadCharts() {
+  if (!jobChart) return; // WS events can arrive before window load initializes charts
   fetch('/chart-data?days='+chartDays+'&tz='+TZ_OFFSET).then(r => r.json()).then(d => {
     const shortLabels = d.labels.map(l => l.slice(5));
 
@@ -1879,7 +1935,7 @@ function renderSources(rows) {
   const el = document.getElementById('src-list');
   if (!el) return;
   if (!rows || rows.length === 0) {
-    el.innerHTML = '<span style="font-size:12px;color:#aeaeb2">No saves yet</span>';
+    el.innerHTML = '<span style="font-size:12px;color:var(--faint)">No saves yet</span>';
     return;
   }
   const max = Math.max(...rows.map(r => r.total));
@@ -1921,12 +1977,111 @@ document.querySelectorAll('.range-tab').forEach(tab => {
   });
 });
 
+// ---- Recent matches ---------------------------------------------------------
+const STATUS_OPTIONS = [
+  ['new', '🆕 New'], ['interested', '⭐ Interested'], ['applied', '📧 Applied'],
+  ['interviewing', '💼 Interviewing'], ['offer', '🎉 Offer'], ['rejected', '❌ Rejected'],
+];
+
+function matchSource(m) {
+  const u = m.sourceUrl || '';
+  if (u.includes('/groups/')) return 'group';
+  if (u.includes('/feed'))    return 'feed';
+  if (u.includes('/search'))  return 'search';
+  if (u.includes('/jobs'))    return 'jobs';
+  return 'other';
+}
+
+function loadMatches() {
+  fetch('/matches?limit=30').then(r => r.json()).then(rows => {
+    const el = document.getElementById('matches-list');
+    document.getElementById('matches-count').textContent = 'last ' + rows.length;
+    if (!rows.length) {
+      el.innerHTML = '<span style="font-size:12px;color:var(--faint);padding:12px 18px;display:block">No matches yet</span>';
+      return;
+    }
+    el.innerHTML = rows.map(m => {
+      const title = esc((m.snippet || '').split('\\n')[0].slice(0, 110)) || '(no text)';
+      const date = m.timestamp ? new Date(m.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—';
+      const meta = [date, m.savedBy ? esc(m.savedBy) : null, matchSource(m), m.author && m.author !== 'Unknown' ? esc(m.author) : null]
+        .filter(Boolean).join(' · ');
+      const badge = m.notionPageId
+        ? '<span class="match-badge synced">notion</span>'
+        : '<span class="match-badge unsynced">unsynced</span>';
+      const status = m.status || 'new';
+      const opts = STATUS_OPTIONS.map(([v, label]) =>
+        '<option value="' + v + '"' + (v === status ? ' selected' : '') + '>' + label + '</option>').join('');
+      const titleHtml = m.url
+        ? '<a href="' + esc(m.url) + '" target="_blank">' + title + '</a>'
+        : title;
+      return '<div class="match-row">'
+        + '<div class="match-main">'
+        + '<div class="match-title">' + titleHtml + '</div>'
+        + '<div class="match-meta">' + meta + '</div>'
+        + '</div>'
+        + badge
+        + '<select class="match-status" data-id="' + esc(m.id) + '">' + opts + '</select>'
+        + '</div>';
+    }).join('');
+    el.querySelectorAll('.match-status').forEach(sel => {
+      sel.onchange = () => {
+        fetch('/status', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ matchId: sel.dataset.id, status: sel.value }),
+        }).then(r => r.json()).then(d => {
+          if (d.error) addFeedItem('ERR', 'tag-err', 'Status update failed: ' + esc(d.error));
+        }).catch(() => addFeedItem('ERR', 'tag-err', 'Status update failed: server unreachable'));
+      };
+    });
+  }).catch(() => {});
+}
+
+// ---- Theme toggle: auto (follow system) → light → dark ------------------------
+const THEME_ORDER = ['auto', 'light', 'dark'];
+const THEME_LABELS = { auto: '◐ auto', light: '☀ light', dark: '☾ dark' };
+let currentTheme = localStorage.getItem('dashTheme');
+if (!THEME_ORDER.includes(currentTheme)) currentTheme = 'auto';
+
+function applyTheme(t) {
+  currentTheme = t;
+  if (t === 'auto') {
+    delete document.documentElement.dataset.theme;
+    localStorage.removeItem('dashTheme');
+  } else {
+    document.documentElement.dataset.theme = t;
+    localStorage.setItem('dashTheme', t);
+  }
+  document.getElementById('theme-btn').textContent = THEME_LABELS[t];
+}
+applyTheme(currentTheme);
+document.getElementById('theme-btn').onclick = () => {
+  applyTheme(THEME_ORDER[(THEME_ORDER.indexOf(currentTheme) + 1) % THEME_ORDER.length]);
+};
+
+// ---- Notion tools availability -----------------------------------------------
+fetch('/health').then(r => r.json()).then(d => {
+  const sub = document.getElementById('notion-tools-sub');
+  if (d.notionConfigured) {
+    sub.textContent = 'Notion connected';
+  } else {
+    // Buttons stay dead until the server has credentials; clicking would only error
+    document.querySelectorAll('#notion-tools-panel .btn, #notion-tools-panel input').forEach(el => el.disabled = true);
+  }
+}).catch(() => {});
+
 // Wait for Chart.js to load before init
 window.addEventListener('load', () => { initCharts(); loadCharts(); });
 
 connectWS();
-setInterval(loadStats, 15000);
-setInterval(loadCharts, 30000);
+loadMatches();
+
+// Poll only while the tab is visible; refresh immediately when it comes back
+setInterval(() => { if (document.visibilityState === 'visible') loadStats(); }, 15000);
+setInterval(() => { if (document.visibilityState === 'visible') { loadCharts(); loadMatches(); } }, 30000);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') { loadStats(); loadCharts(); loadMatches(); }
+});
 
 // ---- Tool status helpers ----------------------------------------------------
 function setToolStatus(boxId, state, html) {
@@ -2003,7 +2158,7 @@ async function loadNotionSchema() {
     statusEl.textContent = 'DB: ' + (d.databaseTitle || 'Untitled') + ', ' + d.properties.length + ' properties found. Set the correct names above.';
     resultsEl.style.display = 'block';
     resultsEl.innerHTML = '<table><tr><th>Property Name</th><th>Type</th></tr>'
-      + d.properties.map(p => '<tr><td style="color:#1d1d1f">' + esc(p.name) + '</td><td style="color:#86868b">' + esc(p.type) + '</td></tr>').join('')
+      + d.properties.map(p => '<tr><td style="color:var(--text)">' + esc(p.name) + '</td><td style="color:var(--sub)">' + esc(p.type) + '</td></tr>').join('')
       + '</table>';
   } catch (e) {
     statusEl.textContent = '✗ Error: ' + e.message;
@@ -2017,7 +2172,7 @@ async function stopFillAI() {
   try {
     await fetch('/notion-fill-ai/cancel', { method: 'POST' });
   } catch (e) {
-    setToolStatus('fill-status-box', 'error', '✗ Cancel failed: ' + e.message);
+    setToolStatus('fill-status-box', 'error', '✗ Cancel failed: ' + esc(e.message));
   }
 }
 
@@ -2073,7 +2228,7 @@ async function runFillAI(dry) {
       statusEl.textContent = 'Watch Live Activity feed for per-page progress.';
     }
   } catch (e) {
-    setToolStatus('fill-status-box', 'error', '✗ ' + e.message);
+    setToolStatus('fill-status-box', 'error', '✗ ' + esc(e.message));
     statusEl.textContent = '';
   }
 
@@ -2121,7 +2276,7 @@ async function runDedup(dry) {
       loadStats();
     }
   } catch (e) {
-    setToolStatus('dedup-status-box', 'error', '✗ ' + e.message);
+    setToolStatus('dedup-status-box', 'error', '✗ ' + esc(e.message));
   }
 
   btnDry.disabled = false;
@@ -2201,7 +2356,7 @@ async function runNotionImport(dry) {
       btnRun.disabled = d.updated === 0;
       resultsEl.style.display = 'block';
       resultsEl.innerHTML = '<table><tr><th>Page ID</th><th>Fields to update</th></tr>'
-        + d.changes.map(c => '<tr><td style="color:#1d1d1f">' + esc(c.pageId) + '</td><td style="color:#86868b">' + esc(c.fields.join(', ')) + '</td></tr>').join('')
+        + d.changes.map(c => '<tr><td style="color:var(--text)">' + esc(c.pageId) + '</td><td style="color:var(--sub)">' + esc(c.fields.join(', ')) + '</td></tr>').join('')
         + '</table>';
     } else {
       setToolStatus('import-status-box', 'success', '✓ Patched <b>' + d.updated + '</b> page(s).');
@@ -2211,7 +2366,7 @@ async function runNotionImport(dry) {
       addFeedItem('IMPORT', 'tag-save', 'Notion import: patched ' + d.updated + ' pages');
     }
   } catch (e) {
-    setToolStatus('import-status-box', 'error', '✗ ' + e.message);
+    setToolStatus('import-status-box', 'error', '✗ ' + esc(e.message));
   }
 
   btnPrev.disabled = false;

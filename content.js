@@ -332,6 +332,66 @@ try {
     }
   }
 
+  // ---- Classification stats -------------------------------------------------
+  // Lightweight per-day scanned/matched counts and per-keyword fire counts
+  // (split by match vs skip decision) for every classified post — no post text.
+  // Powers the Stats + Keyword Effectiveness sections on the diagnostics page.
+  let statsDailyBuffer = {};   // { 'YYYY-MM-DD': { scanned, matched } }
+  let statsKeywordBuffer = {}; // { keyword: { m, s, inv } }
+
+  function trackClassifyStats(info) {
+    const day = new Date().toLocaleDateString('en-CA'); // local YYYY-MM-DD
+    const d = statsDailyBuffer[day] || (statsDailyBuffer[day] = { scanned: 0, matched: 0 });
+    d.scanned++;
+    if (info.match) d.matched++;
+
+    const field = info.match ? 'm' : 's';
+    const bump = (k, f) => {
+      if (!k) return;
+      const e = statsKeywordBuffer[k] || (statsKeywordBuffer[k] = { m: 0, s: 0, inv: 0 });
+      e[f]++;
+    };
+    (info.devopsHits || []).forEach((k) => bump(k, field));
+    (info.hiringHits || []).forEach((k) => bump(k, field));
+    if (info.invalidHit) bump(info.invalidHit, 'inv');
+  }
+
+  const STATS_DAILY_MAX_DAYS = 60;
+
+  function flushClassifyStats() {
+    if (Object.keys(statsDailyBuffer).length === 0 &&
+        Object.keys(statsKeywordBuffer).length === 0) return;
+    const pendingDaily = statsDailyBuffer;
+    const pendingKw = statsKeywordBuffer;
+    statsDailyBuffer = {};
+    statsKeywordBuffer = {};
+    try {
+      if (!chrome.storage || !chrome.storage.local) return;
+      chrome.storage.local.get(['devopsStatsDaily', 'devopsKeywordStats'], (result) => {
+        if (chrome.runtime.lastError) return;
+        const daily = result.devopsStatsDaily || {};
+        for (const [day, v] of Object.entries(pendingDaily)) {
+          const d = daily[day] || (daily[day] = { scanned: 0, matched: 0 });
+          d.scanned += v.scanned;
+          d.matched += v.matched;
+        }
+        const days = Object.keys(daily).sort();
+        while (days.length > STATS_DAILY_MAX_DAYS) delete daily[days.shift()];
+
+        const kw = result.devopsKeywordStats || {};
+        for (const [k, v] of Object.entries(pendingKw)) {
+          const e = kw[k] || (kw[k] = { m: 0, s: 0, inv: 0 });
+          e.m += v.m;
+          e.s += v.s;
+          e.inv = (e.inv || 0) + v.inv;
+        }
+        chrome.storage.local.set({ devopsStatsDaily: daily, devopsKeywordStats: kw });
+      });
+    } catch (e) {
+      dbg('flushClassifyStats error:', e.message);
+    }
+  }
+
   // getPostText, getPostBodyOnly, getPostUrl defined in shared/postHelpers.js
 
   // Highlight styles per category: background only, no font changes
@@ -1865,6 +1925,7 @@ try {
       }
       const info = classifyV2(text, postEl);
       captureDiag('feed', postEl, text, info);
+      trackClassifyStats(info);
       bumpAnalyzed(postEl);
       if (info.match) {
         dbg("match:", info.devopsHits.join(', '), info.hiringHit ? `+ ${info.hiringHit}` : "");
@@ -1904,8 +1965,9 @@ try {
     // Periodic safety scan in case mutations are missed.
     setInterval(scanOnce, 2000);
 
-    // Flush keyword hit counts to storage every 30 seconds
+    // Flush keyword hit counts + classification stats to storage every 30 seconds
     setInterval(flushKeywordHits, 30000);
+    setInterval(flushClassifyStats, 30000);
 
     // Refresh Notion/AI counts every 10 seconds
     setInterval(refreshStorageCounts, 10000);
@@ -2250,6 +2312,7 @@ try {
 
       const info = classifyV2(cardText, card);
       captureDiag('jobs', card, cardText, info);
+      trackClassifyStats(info);
       if (!info.match) return;
 
       decorateJobCard(card, info, url);

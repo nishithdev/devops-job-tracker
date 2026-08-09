@@ -18,6 +18,10 @@ Default keyword lists live in `shared/keywordConfig.js` (`DEFAULT_DEVOPS_KEYWORD
 
 Decorated posts have a 🔄 button next to the AI tag: re-runs AI analysis with `force: true` and re-syncs to Notion (PATCHes the existing page via `notionPageId`, never duplicates). Force propagates through `rescanAIForPost` (content.js) → `handleAnalyzeWithAI` (background.js, skips local `aiTextHash` cache) → `POST /ai` with `force` (server evicts `aiCache` + `ai_cache` DB row before queueing).
 
+## Stats & keyword effectiveness
+
+Every classification (feed + job cards, match and skip) is tracked lightweight (no post text): content.js `trackClassifyStats()` buffers, `flushClassifyStats()` writes every 30s to storage keys `devopsStatsDaily` (`{date: {scanned, matched}}`, capped 60 days) and `devopsKeywordStats` (`{keyword: {m, s, inv}}` — fires in matches/skips, invalid blocks). Diagnostics page renders matches-per-day bars and a keyword effectiveness table (badges: dead = never fired, noisy = ≥10 fires with <20% match rate) against the effective lists from `resolveKeywords()`.
+
 ## Diagnostic post capture (debugging misclassifications)
 
 When a post is wrongly matched/skipped, use the capture pipeline to get the exact text and score breakdown the classifier saw:
